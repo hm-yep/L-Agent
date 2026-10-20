@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+data/
+logs/
+.git/
+.venv/
+venv/
+*.pptx
+*.docx
+*.xlsx
+*.png
+*.jpg
+.pytest_cache/
+finetune/output/

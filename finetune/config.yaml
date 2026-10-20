@@ -1,0 +1,15 @@
+base_model: "Qwen/Qwen2.5-1.5B-Instruct"
+data_path: "finetune/data/train.jsonl"
+output_dir: "finetune/output"
+max_length: 512
+batch_size: 4
+grad_accum: 4
+learning_rate: 2.0e-4
+num_epochs: 3
+warmup_ratio: 0.1
+logging_steps: 10
+save_steps: 100
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]

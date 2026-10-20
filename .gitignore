@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.idea/
+dist/
+build/
+# 只忽略根目录运行时数据（向量库/日志/记忆）；锚定后 finetune/data 样本仍可提交
+/data/
+.pytest_cache/
+*.pyc
+*.log
+.DS_Store
