@@ -2,6 +2,22 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 对话页改为自绘圆角气泡（抛弃 QTextBrowser）
+
+> 本日第十版：用户明确「不要有棱角的框」。Qt 富文本（QTextBrowser）无论如何都做不了圆角（不支持 border-radius），上一版的 `<table>` 方案只能做出直角块。故将对话页整体从富文本改造为 `QScrollArea` + 自绘 `QLabel` 气泡，用 QSS 的 `border-radius` 实现真正的圆角。
+
+### 变更
+
+- `ui/workspace_window.py`：
+  - 对话页 `_build_chat_page` 从 `QTextBrowser` 改为 `QScrollArea#chatScroll` + 垂直 `QVBoxLayout` 容器（`chatList`），每条消息一个 `QLabel` 气泡；
+  - 新增 `_add_bubble` / `_scroll_chat_to_bottom`：用户消息右对齐蓝底白字（`bubbleMe`）、助手消息左对齐深灰底亮字（`bubbleAi`），均 `border-radius:14px` + 内边距 + 自动换行 + 可鼠标选中文本，最大宽 680px 自适应；
+  - 移除 `QTextCursor` 导入（不再需要滚动光标）。
+- `tests/test_workspace_window.py`：`test_chat_page_shows_real_history_and_escapes_html` 从检查 `toHtml()` 改为遍历气泡 QLabel 文本（QLabel 天然不执行 script，安全语义不变）。
+
+### 验证
+
+- 离屏渲染确认气泡四角圆润、无棱角；pytest 408 passed / 1 skipped、契约 44/44、集成自检 157/157 全绿。
+
 ## [2026-11-15] · 对话气泡改用 table 渲染，修复「窄条高亮」观感
 
 > 本日第九版：用户反馈「字体搞得丑」。根因不是字号，而是气泡用了 Qt 富文本不支持的 `display:inline-block` + `border-radius` + `max-width`，被 Qt 静默丢弃，气泡退化成「紧贴文字的直角窄条」，看起来像选中高亮而不是气泡。

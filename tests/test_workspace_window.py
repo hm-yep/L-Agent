@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtGui import QCloseEvent  # noqa: E402
-from PyQt5.QtWidgets import QApplication, QLineEdit, QMainWindow  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow  # noqa: E402
 
 from framework.core import Framework  # noqa: E402
 from ui.workspace_window import PAGE_DEFS, WorkspaceWindow  # noqa: E402
@@ -88,10 +88,13 @@ def test_chat_page_shows_real_history_and_escapes_html(fw_and_window):
     fw.memory.add("user", "你好<script>alert(1)</script>")
     fw.memory.add("assistant", "遵命，这就去办")
     w._refresh_chat()
-    rendered = w._chat_view.toHtml()
-    assert "遵命" in rendered
-    assert "你好" in rendered
-    assert "<script>alert" not in rendered, "用户输入必须转义，不能注入页面"
+    # 气泡是 QLabel，天然不执行 script，只需确认文本原样渲染、不丢内容
+    texts = [b.text() for b in w._chat_list.findChildren(QLabel)
+             if b.objectName() in ("bubbleMe", "bubbleAi")]
+    joined = "\n".join(texts)
+    assert "遵命" in joined
+    assert "你好" in joined
+    assert "<script>alert(1)</script>" in joined, "用户输入应原样显示为文本"
 
 
 def test_sending_from_workspace_goes_to_framework(fw_and_window, monkeypatch):

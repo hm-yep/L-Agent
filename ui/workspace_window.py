@@ -28,15 +28,15 @@ import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QTextCursor
+from PyQt5.QtGui import QDesktopServices
 
 from .icons import icon
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenuBar, QPushButton, QStackedWidget,
-    QStatusBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
-    QWidget,
+    QListWidgetItem, QMainWindow, QMenuBar, QPushButton, QScrollArea,
+    QStackedWidget, QStatusBar, QTableWidget, QTableWidgetItem,
+    QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from framework import config
@@ -115,9 +115,26 @@ QPushButton#topIcon { background: transparent; color: __MUTED__; border: none;
 QPushButton#topIcon:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
 QWidget#pageCard { background: __CARD__; border: 1px solid __BORDER__;
                    border-radius: 12px; }
-QTextBrowser#chatView, QTextBrowser#detailView {
+QTextBrowser#detailView {
     background: __BG__; color: __TEXT__; border: 1px solid __BORDER__;
     border-radius: 9px; font-size: __FS_BODY__px; padding: 10px;
+}
+/* 对话页：滚动容器 + 自绘圆角气泡（QTextBrowser 富文本做不了圆角） */
+QScrollArea#chatScroll { background: __BG__; border: none; }
+QWidget#chatList { background: __BG__; }
+QLabel#chatEmpty {
+    color: __MUTED__; background: transparent; border: none;
+    font-size: __FS_BODY__px; padding: 24px;
+}
+QLabel#bubbleMe {
+    background: __BUBBLE_ME__; color: __BUBBLE_ME_TEXT__;
+    border: none; border-radius: 14px;
+    padding: 10px 14px; font-size: __FS_BODY__px;
+}
+QLabel#bubbleAi {
+    background: __BUBBLE_AI__; color: __TEXT__;
+    border: none; border-radius: 14px;
+    padding: 10px 14px; font-size: __FS_BODY__px;
 }
 /* 底部命令栏：参考图的「大圆角输入框 + 下方控制条」两层结构 */
 QWidget#commandBar { background: __BG__; }
@@ -625,10 +642,20 @@ class WorkspaceWindow(QMainWindow):
     # ---------------- 页面：对话 ----------------
     def _build_chat_page(self, hint):
         page, v = self._page_shell(hint)
-        self._chat_view = QTextBrowser()
-        self._chat_view.setObjectName("chatView")
-        self._chat_view.setOpenExternalLinks(False)
-        v.addWidget(self._chat_view, 1)
+        # 用 QScrollArea + 自绘 QLabel 气泡，才能真正做出圆角
+        # （QTextBrowser 富文本不支持 border-radius / display:inline-block）。
+        self._chat_scroll = QScrollArea()
+        self._chat_scroll.setObjectName("chatScroll")
+        self._chat_scroll.setWidgetResizable(True)
+        self._chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._chat_list = QWidget()
+        self._chat_list.setObjectName("chatList")
+        self._chat_layout = QVBoxLayout(self._chat_list)
+        self._chat_layout.setContentsMargins(6, 6, 6, 6)
+        self._chat_layout.setSpacing(8)
+        self._chat_layout.addStretch(1)
+        self._chat_scroll.setWidget(self._chat_list)
+        v.addWidget(self._chat_scroll, 1)
         return page, self._refresh_chat
 
     def _send(self):
@@ -659,37 +686,50 @@ class WorkspaceWindow(QMainWindow):
             self._chat_input.setText((cur + " @ ").strip())
 
     def _refresh_chat(self):
+        # 清空旧气泡（保留末尾的 stretch 弹簧）
+        while self._chat_layout.count() > 1:
+            item = self._chat_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
         history = list(getattr(self.fw.memory, "history", []) or [])[-60:]
         if not history:
-            self._chat_view.setHtml(
-                '<div style="color:#aab4bf;padding:24px;text-align:center;">'
-                '还没有对话。在底部命令栏输入一句话，或点桌宠直接说。</div>')
+            empty = QLabel("还没有对话。在底部命令栏输入一句话，或点桌宠直接说。")
+            empty.setObjectName("chatEmpty")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setWordWrap(True)
+            self._chat_layout.insertWidget(0, empty)
             return
-        from .typography import SZ
-        p = _LIGHT if self._theme == "light" else _DARK
-        fs = SZ["body"] + 1  # 对话正文比通用正文大一档，阅读更舒适
-        # Qt 富文本不支持 display:inline-block / border-radius / max-width，
-        # 之前用 <span> 导致气泡退化成「紧贴文字的窄条」。改用 <table>
-        # （bgcolor + cellpadding + align）做出有内边距、宽度随内容的气泡块。
-        parts = []
         for item in history:
             role = item.get("role", "")
-            content = html.escape(str(item.get("content", "")))
-            if role == "user":
-                parts.append(
-                    f'<table align="right" cellpadding="10" cellspacing="0" '
-                    f'bgcolor="{p["BUBBLE_ME"]}">'
-                    f'<tr><td style="color:{p["BUBBLE_ME_TEXT"]};'
-                    f'font-size:{fs}px;">{content}</td></tr></table>')
-            else:
-                parts.append(
-                    f'<table align="left" cellpadding="10" cellspacing="0" '
-                    f'bgcolor="{p["BUBBLE_AI"]}">'
-                    f'<tr><td style="color:{p["TEXT"]};'
-                    f'font-size:{fs}px;">{content}</td></tr></table>')
-        # table 是块级元素，Qt 会自动在块间留行距，无需额外 <br/>
-        self._chat_view.setHtml("".join(parts))
-        self._chat_view.moveCursor(QTextCursor.End)
+            content = str(item.get("content", ""))
+            self._add_bubble(role, content)
+        # 滚动到底部
+        QTimer.singleShot(0, self._scroll_chat_to_bottom)
+
+    def _add_bubble(self, role: str, content: str):
+        is_me = role == "user"
+        bubble = QLabel(content)
+        bubble.setObjectName("bubbleMe" if is_me else "bubbleAi")
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        bubble.setMaximumWidth(680)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        if is_me:
+            row.addStretch(1)
+            row.addWidget(bubble, 0, Qt.AlignRight)
+        else:
+            row.addWidget(bubble, 0, Qt.AlignLeft)
+            row.addStretch(1)
+        container = QWidget()
+        container.setLayout(row)
+        # 插到末尾弹簧之前
+        self._chat_layout.insertWidget(self._chat_layout.count() - 1, container)
+
+    def _scroll_chat_to_bottom(self):
+        bar = self._chat_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     # ---------------- 页面：偏好 ----------------
     def _build_prefs_page(self, hint):
