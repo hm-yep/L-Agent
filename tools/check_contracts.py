@@ -192,6 +192,19 @@ def main() -> int:
           and "打开工作台" in tray_src)
     check("截图时工作台一并隐藏", "_workspace_was_visible" in pet_src)
 
+    # 字体系统：统一字体栈 + 高 DPI + 字号阶梯，避免宋体回退与字号过小
+    typo_path = ROOT / "ui" / "typography.py"
+    check("统一字体系统模块存在", typo_path.exists())
+    typo_src = typo_path.read_text(encoding="utf-8") if typo_path.exists() else ""
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    check("入口安装全局字体与高 DPI",
+          "install_app_fonts" in main_src and "enable_high_dpi" in main_src
+          and "AA_EnableHighDpiScaling" in typo_src)
+    check("字体栈为现代无衬线且字号走阶梯",
+          "Segoe UI" in typo_src and "Microsoft YaHei" in typo_src
+          and "__FONT_STACK__" in ws_src
+          and "font-family: __FONT_STACK__" in ws_src)
+
     print("=== 文档口径 ===")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     check("README 不再使用过时的 119 项数字", "119 项" not in readme)

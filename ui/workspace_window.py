@@ -63,98 +63,116 @@ _DARK = dict(
 )
 
 _QSS_TEMPLATE = """
+/* 全局字体栈：所有未单独指定字体的控件都继承现代无衬线界面字体，
+   避免 Windows 下回退到宋体导致发虚、带衬线、字号不一。 */
+QWidget { font-family: __FONT_STACK__; }
 QMainWindow, QWidget#central { background: __BG__; }
-QMenuBar { background: __CARD__; color: __TEXT__; border-bottom: 1px solid __BORDER__; }
+QMenuBar { background: __CARD__; color: __TEXT__;
+           border-bottom: 1px solid __BORDER__; font-size: __FS_SMALL__px; }
 QMenuBar::item { padding: 5px 12px; border-radius: 6px; }
 QMenuBar::item:selected { background: __ACCENT_SOFT__; }
-QMenu { background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__; }
-QMenu::item { padding: 7px 22px 7px 14px; }
+QMenu { background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
+        font-size: __FS_SMALL__px; }
+QMenu::item { padding: 8px 24px 8px 16px; }
 QMenu::item:selected { background: __ACCENT__; color: #FFFFFF; }
 QWidget#navPanel { background: __NAV__; border: none; }
-QLabel#brand { color: __NAV_TEXT__; font-size: 19px; font-weight: 600; padding: 2px 2px; }
-QLabel#brandSub { color: __MUTED__; font-size: 12px; padding-bottom: 8px; }
+QLabel#brand { color: __NAV_TEXT__; font-size: __FS_BRAND__px;
+               font-weight: __WT_SEMIBOLD__; padding: 2px 2px; }
+QLabel#brandSub { color: __MUTED__; font-size: __FS_CAPTION__px; padding-bottom: 8px; }
 QPushButton#newConv { background: __ACCENT__; color: #FFFFFF; border: none;
-                      border-radius: 8px; padding: 9px 12px; font-size: 13px; }
+                      border-radius: 8px; padding: 10px 12px; font-size: __FS_BODY__px;
+                      font-weight: __WT_MEDIUM__; }
 QPushButton#newConv:hover { background: __NAV_ACTIVE__; }
 QPushButton#navButton {
     color: __NAV_TEXT__; background: transparent; border: none;
-    border-radius: 8px; padding: 10px 12px; text-align: left;
-    font-size: 14px; font-family: "Microsoft YaHei", sans-serif;
+    border-radius: 8px; padding: 11px 12px; text-align: left;
+    font-size: __FS_BODY__px;
 }
 QPushButton#navButton:hover { background: __ACCENT_SOFT__; }
-QPushButton#navButton:checked { background: __NAV_ACTIVE__; color: #FFFFFF; }
-QLabel#navGroupTitle { color: __MUTED__; font-size: 11px; padding: 10px 6px 2px; }
-QLabel#navGroupBody { color: __NAV_TEXT__; font-size: 13px; padding: 0 6px; }
+QPushButton#navButton:checked { background: __NAV_ACTIVE__; color: #FFFFFF;
+                                font-weight: __WT_MEDIUM__; }
+QLabel#navGroupTitle { color: __MUTED__; font-size: __FS_MICRO__px;
+                       padding: 10px 6px 2px; }
+QLabel#navGroupBody { color: __NAV_TEXT__; font-size: __FS_SMALL__px; padding: 0 6px; }
 QWidget#navFoot { background: __NAV__; border: none; }
 QPushButton#navFootBtn {
     color: __NAV_TEXT__; background: __ACCENT_SOFT__; border: none;
-    border-radius: 8px; padding: 8px; font-size: 15px;
+    border-radius: 8px; padding: 8px; font-size: __FS_LEAD__px;
 }
 QPushButton#navFootBtn:hover { background: __NAV_ACTIVE__; color: #FFFFFF; }
 QPushButton#updateBtn {
     background: transparent; color: __ACCENT__; border: 1px solid __BORDER__;
-    border-radius: 7px; padding: 6px 10px; font-size: 12px;
+    border-radius: 7px; padding: 6px 10px; font-size: __FS_CAPTION__px;
 }
 QPushButton#updateBtn:hover { background: __ACCENT_SOFT__; }
 QWidget#topBar { background: __CARD__; border-bottom: 1px solid __BORDER__; }
-QLabel#pageTitle { color: __TEXT__; font-size: 17px; font-weight: 600; }
+QLabel#pageTitle { color: __TEXT__; font-size: __FS_TITLE__px;
+                   font-weight: __WT_SEMIBOLD__; }
 QPushButton#topIcon { background: transparent; color: __TEXT__; border: none;
-                       border-radius: 8px; padding: 7px 11px; font-size: 14px; }
+                      border-radius: 8px; padding: 7px 11px; font-size: __FS_BODY__px; }
 QPushButton#topIcon:hover { background: __ACCENT_SOFT__; }
 QWidget#pageCard { background: __CARD__; border: 1px solid __BORDER__;
                    border-radius: 12px; }
 QTextBrowser#chatView, QTextBrowser#detailView {
     background: __BG__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; font-size: 14px; padding: 8px;
-    font-family: "Microsoft YaHei", sans-serif;
+    border-radius: 9px; font-size: __FS_BODY__px; padding: 10px;
 }
 QLineEdit#commandInput {
     background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 10px; padding: 11px 14px; font-size: 14px;
+    border-radius: 10px; padding: 12px 14px; font-size: __FS_LEAD__px;
 }
 QLineEdit#commandInput:focus { border: 1.5px solid __ACCENT__; }
 QComboBox#cmdCombo {
     background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 8px; padding: 6px 8px; font-size: 13px;
+    border-radius: 8px; padding: 6px 8px; font-size: __FS_SMALL__px;
 }
 QComboBox#cmdCombo QAbstractItemView { background: __CARD__; color: __TEXT__; }
 QPushButton#sendBtn {
     background: __ACCENT__; color: #FFFFFF; border: none;
-    border-radius: 10px; padding: 10px 18px; font-size: 14px; font-weight: 600;
+    border-radius: 10px; padding: 11px 18px; font-size: __FS_LEAD__px;
+    font-weight: __WT_SEMIBOLD__;
 }
 QPushButton#sendBtn:hover { background: __NAV_ACTIVE__; }
 QPushButton#primaryButton {
     background: __ACCENT__; color: #FFFFFF; border: none;
-    border-radius: 7px; padding: 8px 16px; font-size: 13px;
+    border-radius: 7px; padding: 8px 16px; font-size: __FS_SMALL__px;
+    font-weight: __WT_MEDIUM__;
 }
 QPushButton#primaryButton:hover { background: __NAV_ACTIVE__; }
 QPushButton#ghostButton {
     background: transparent; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 7px; padding: 7px 14px; font-size: 13px;
+    border-radius: 7px; padding: 7px 14px; font-size: __FS_SMALL__px;
 }
 QPushButton#ghostButton:hover { background: __ACCENT_SOFT__; }
 QTableWidget#dataTable {
     background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; gridline-color: __BORDER__; font-size: 13px;
+    border-radius: 9px; gridline-color: __BORDER__; font-size: __FS_SMALL__px;
     alternate-background-color: __ROW_ALT__;
 }
 QTableWidget#dataTable QHeaderView::section {
     background: __ACCENT_SOFT__; color: __TEXT__; border: none;
-    border-bottom: 1px solid __BORDER__; padding: 8px 6px; font-size: 13px;
+    border-bottom: 1px solid __BORDER__; padding: 9px 6px;
+    font-size: __FS_SMALL__px; font-weight: __WT_MEDIUM__;
 }
 QListWidget#deliveryList {
     background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; font-size: 14px; padding: 6px;
+    border-radius: 9px; font-size: __FS_BODY__px; padding: 6px;
 }
 QStatusBar#statusBar { background: __CARD__; color: __MUTED__;
-                       border-top: 1px solid __BORDER__; font-size: 12px; }
+                       border-top: 1px solid __BORDER__; font-size: __FS_CAPTION__px; }
 """
 
 
 def _qss(palette: dict) -> str:
+    from .typography import apply_qss_tokens, WT
     out = _QSS_TEMPLATE
     for key, value in palette.items():
         out = out.replace("__%s__" % key, value)
+    # 字号 + 字体栈 token
+    out = apply_qss_tokens(out)
+    # 字重 token
+    for key, value in WT.items():
+        out = out.replace("__WT_%s__" % key.upper(), str(value))
     return out
 
 

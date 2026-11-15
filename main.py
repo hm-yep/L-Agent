@@ -432,7 +432,13 @@ def main():
     if enable_rag and not enable_selftest:
         warm_up_rag()
 
+    # 高分屏文字锐利：这两个属性必须在 QApplication 实例化【之前】设置，
+    # 否则 125%/150% 缩放下字体会发虚、控件偏小（见 ui/typography.py）。
+    from ui.typography import enable_high_dpi, install_app_fonts
+    enable_high_dpi()
+
     app = QApplication(sys.argv)
+    install_app_fonts(app)                 # 全应用统一界面字体栈
     app.setQuitOnLastWindowClosed(False)   # 托盘常驻，关窗不退出
 
     # 应用图标

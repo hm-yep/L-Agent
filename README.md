@@ -184,8 +184,8 @@ data/        运行时产物（记忆、任务台、向量库、日志、事件�
 
 | 口径 | 命令 | 实测结果（2026-11-15） | 说明 |
 |---|---|---|---|
-| pytest 单测 | `pytest -q` | 404 passed / 1 skipped | 收集 `tests/` 下的单元测试（含 API 安全、路径白名单、契约、状态复位、端到端接线 8 项） |
-| 契约检查 | `python tools/check_contracts.py` | 41/41 通过 | 共 41 项：校验动作契约、三套人设、依赖清单、API 安全护栏，以及本版新增的 L1/L2 接线与三份文档数字一致性 |
+| pytest 单测 | `pytest -q` | 408 passed / 1 skipped | 收集 `tests/` 下的单元测试（含 API 安全、路径白名单、契约、状态复位、端到端接线 8 项与统一字体系统 4 项） |
+| 契约检查 | `python tools/check_contracts.py` | 44/44 通过 | 共 44 项：校验动作契约、三套人设、依赖清单、API 安全护栏，以及本版新增的 L1/L2 接线、统一字体系统与三份文档数字一致性 |
 | tools 集成自检 | `python tools/test_agent_features.py` | 157 通过 / 0 失败 | 需单独运行的集成自检，证明技能/撤销零模型调用 |
 | 能力评测集 | `python tools/eval_tasks.py` | 38/38 通过 | 离线确定性任务的端到端通过率 + 失败原因分类 |
 | 启动冒烟 | `python main.py --selftest` | 35/35 通过 | 离屏环境跳过 2 项依赖真实屏幕几何的布局断言；CI 自动运行 |

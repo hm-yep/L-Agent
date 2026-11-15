@@ -276,3 +276,47 @@ def test_detach_stops_timer_and_disconnects(fw_and_window):
     w.detach()
     assert not w._status_timer.isActive()
     w.detach()   # 幂等，不抛异常
+
+
+def test_workspace_qss_has_unified_font_stack(fw_and_window):
+    """所有控件统一现代字体栈，不能回退到 Qt 默认的宋体。"""
+    _fw, w, _path = fw_and_window
+    qss = w.styleSheet()
+    assert "font-family" in qss
+    assert "Segoe UI" in qss and "Microsoft YaHei" in qss
+    # 不能有未替换的占位符，也不能再有写死的微软雅黑单字体
+    assert "__FONT_STACK__" not in qss
+    assert '"Microsoft YaHei", sans-serif' not in qss
+
+
+def test_font_sizes_use_readable_scale(fw_and_window):
+    """字号阶梯整体调大：正文 15、页面标题 21、品牌 24。"""
+    from ui.typography import SZ
+    assert SZ["body"] >= 15, "正文不能太小看不清"
+    assert SZ["title"] > SZ["body"] > SZ["caption"]
+    _fw, w, _path = fw_and_window
+    qss = w.styleSheet()
+    assert "font-size: %dpx" % SZ["body"] in qss
+    assert "font-size: %dpx" % SZ["title"] in qss
+
+
+def test_no_hardcoded_font_sizes_left_in_qss(fw_and_window):
+    """QSS 里不应残留写死的 px 字号（都要走阶梯占位符）。"""
+    import re
+    from ui.workspace_window import _QSS_TEMPLATE
+    # 允许 padding/border-radius 等尺寸，但 font-size 必须是占位符
+    hard = re.findall(r"font-size:\s*\d+px", _QSS_TEMPLATE)
+    assert hard == [], "发现写死字号: %s" % hard
+
+
+def test_app_font_and_high_dpi_helpers():
+    """字体工具：应用字体含界面字体栈，高 DPI 属性可设置。"""
+    from PyQt5.QtCore import Qt
+    from ui.typography import app_font, enable_high_dpi, install_app_fonts
+    f = app_font()
+    fams = f.families()
+    assert "Microsoft YaHei UI" in fams or "Segoe UI" in fams
+    enable_high_dpi()   # 不应抛异常
+    app = QApplication.instance()
+    install_app_fonts(app)
+    assert app.font().families() == f.families()

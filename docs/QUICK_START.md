@@ -167,8 +167,8 @@ python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html
 
 | 口径 | 命令 | 实测结果（2026-11-15） |
 |---|---|---|
-| pytest 单测 | `pytest -q` | 404 passed / 1 skipped |
-| 契约检查 | `python tools/check_contracts.py` | 41/41 通过 |
+| pytest 单测 | `pytest -q` | 408 passed / 1 skipped |
+| 契约检查 | `python tools/check_contracts.py` | 44/44 通过 |
 | tools 集成自检 | `python tools/test_agent_features.py` | 157 通过 / 0 失败 |
 | 能力评测集 | `python tools/eval_tasks.py` | 38/38 通过 |
 | 启动冒烟 | `python main.py --selftest` | 35/35 通过（离屏跳过 2 项布局几何断言） |
