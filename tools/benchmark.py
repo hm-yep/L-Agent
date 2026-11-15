@@ -136,6 +136,9 @@ _silence_logger()
 DEFAULT_THRESHOLD = 0.8
 DEFAULT_SEED = 42
 MIN_RESCUED = 4
+# 学习后完成率必须比学习前高出至少这个百分点，否则判「进化失效」。
+# 当前实测提升 25.00pp，留出裕量设 10pp，防未来改动悄悄把进化能力改坏。
+MIN_DELTA_PP = 10.0
 HISTORY_PATH = os.path.join(_ROOT, "docs", "benchmark", "history.jsonl")
 
 ALL_FAILURE_CATEGORIES = (
@@ -752,6 +755,74 @@ def _write_json(path, data):
     _print(f"\n[已写出 JSON] {os.path.abspath(path)}")
 
 
+def _write_markdown(path, cmp):
+    """把学习前后对照写成给人看的 markdown，落到 docs/eval/ 供 README 引用。"""
+    b, a = cmp["before"], cmp["after"]
+    meta = cmp["meta"]
+    rescued = cmp["rescued_ids"]
+    hard = a["total"] - a["passed"]
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _cat_table(cats):
+        rows = []
+        for k in ALL_FAILURE_CATEGORIES:
+            if cats.get(k):
+                rows.append(f"| {k} | {cats[k]} |")
+        return "\n".join(rows) if rows else "| （无） | 0 |"
+
+    md = f"""# 带扰动的能力评测报告（学习前后对照）
+
+> 由 `tools/benchmark.py --md` 生成 · {ts} · 种子 {cmp['seed']}
+
+## 口径
+
+- **评测对象**：系统在扰动下「把事办成」的能力，以及使用中学到的规则/偏好能否把办砸的事救回。
+- **链路**：{meta['network']}
+- **隔离**：{meta['isolation']}
+- **任务规模**：{meta['tasks']} 条 · 扰动类型 {meta['perturbation_types']} 类
+
+## 核心结论
+
+| 指标 | 学习前 | 学习后 | 变化 |
+| --- | --- | --- | --- |
+| 完成率 | {b['completion_rate']:.2%}（{b['passed']}/{b['total']}） | {a['completion_rate']:.2%}（{a['passed']}/{a['total']}） | **+{cmp['delta_pp']:.2f} pp** |
+| 质量门通过率 | {b['quality_gate_pass_rate']:.2%} | {a['quality_gate_pass_rate']:.2%} | {a['quality_gate_pass_rate'] - b['quality_gate_pass_rate']:+.2%} |
+| 平均重试次数 | {b['avg_retries']} | {a['avg_retries']} | — |
+| p50 / p95 延迟(ms) | {b['p50_latency_ms']} / {b['p95_latency_ms']} | {a['p50_latency_ms']} / {a['p95_latency_ms']} | — |
+
+- **学习后完成率较学习前提升 {cmp['delta_pp']:.2f} 个百分点**，共 {len(rescued)} 条任务被真实归纳出的规则/偏好救回（换词重搜 / 补足文档 / 跳过坏路径 / 显式确认 / 别联网兜底）。
+- **仍如实保留 {hard} 条硬失败样本**（缺参、恶意动作、计划冲突、无法换词的零重合资料），未靠把任务设计成全满分来通过阈值——满分评测没有区分度。
+
+## 被救回的任务 id（{len(rescued)} 条）
+
+{ '、'.join(rescued) if rescued else '（无）' }
+
+## 失败原因分类
+
+### 学习前
+
+| 原因 | 条数 |
+| --- | --- |
+{_cat_table(cmp['failure_categories_before'])}
+
+### 学习后
+
+| 原因 | 条数 |
+| --- | --- |
+{_cat_table(cmp['failure_categories_after'])}
+
+---
+
+*口径提醒：这是离线确定性链路的能力抽样，不等同于联网或真实大模型表现；与 pytest 单测互补，用于量化「进化是否真的有用」。*
+"""
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    _print(f"\n[已写出 Markdown] {os.path.abspath(path)}")
+
+
 def _append_history(cmp, seed):
     """追加一行到 docs/benchmark/history.jsonl（目录不存在则创建）。"""
     row = {
@@ -789,10 +860,14 @@ def main(argv=None):
         description="带扰动的能力评测（含学习前后对照，离线确定性）")
     p.add_argument("--json", dest="json_path", default=None,
                    help="把结果写成机器可读 JSON")
+    p.add_argument("--md", dest="md_path", default=None,
+                   help="把结果写成 markdown 报告（供 README / 简历引用）")
     p.add_argument("--append-history", action="store_true",
                    help="追加一行到 docs/benchmark/history.jsonl")
     p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                    help="学习后完成率阈值，默认 0.8")
+    p.add_argument("--min-delta", type=float, default=MIN_DELTA_PP,
+                   help="学习后较学习前至少提升的百分点，默认 10（防进化失效回归）")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED,
                    help="随机种子，默认 42")
     args = p.parse_args(argv)
@@ -802,9 +877,10 @@ def main(argv=None):
 
     cmp = compare(args.seed)
     exit_ok = (cmp["after_rate"] >= args.threshold - 1e-9
-               and cmp["delta_pp"] > 0
+               and cmp["delta_pp"] >= args.min_delta - 1e-9
                and len(cmp["rescued_ids"]) >= MIN_RESCUED)
     cmp["threshold"] = args.threshold
+    cmp["min_delta"] = args.min_delta
     cmp["exit_ok"] = exit_ok
     _print_report(cmp, args.threshold, exit_ok)
 
@@ -813,6 +889,12 @@ def main(argv=None):
             _write_json(args.json_path, cmp)
         except OSError as e:
             _print(f"写 JSON 失败：{type(e).__name__}: {e}")
+            return 1
+    if args.md_path:
+        try:
+            _write_markdown(args.md_path, cmp)
+        except OSError as e:
+            _print(f"写 Markdown 失败：{type(e).__name__}: {e}")
             return 1
     if args.append_history:
         try:

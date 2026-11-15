@@ -165,6 +165,17 @@ def main() -> int:
     bench_src = (ROOT / "tools" / "benchmark.py").read_text(encoding="utf-8")
     check("扰动评测含学习前后对照",
           "class LearningAdapter" in bench_src and "def compare(" in bench_src)
+    check("扰动评测带 min-delta 回归卡口",
+          "min-delta" in bench_src and "MIN_DELTA_PP" in bench_src)
+    eval_src = (ROOT / "tools" / "eval_tasks.py").read_text(encoding="utf-8")
+    check("两套评测都支持 markdown 落盘",
+          "--md" in bench_src and "--md" in eval_src
+          and "_write_markdown" in bench_src and "_write_markdown" in eval_src)
+    ci_src = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    check("CI 落盘评测产物并带回归卡口",
+          "docs/eval/benchmark.md" in ci_src
+          and "docs/eval/capability.md" in ci_src
+          and "--min-delta" in ci_src)
     trace_src = (ROOT / "tools" / "trace_view.py").read_text(encoding="utf-8")
     check("时间线渲染对撤销账本脱敏",
           "undo_ledger" in trace_src and "html.escape" in trace_src)

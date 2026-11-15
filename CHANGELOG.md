@@ -2,6 +2,26 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 评测深度落盘 + 进 CI 卡口（把 +25pp 变成看得见的东西）
+
+> 本轮盘面重审发现：评测层真实存在且口径认真（扰动 + 学习前后对照），但「零落盘产物」——跑完只出 stdout，README/CI/简历三处都看不到那个最硬的数字。本次把深度落到盘上并收进 CI 回归卡口。
+
+### 新增
+
+- `tools/benchmark.py`：新增 `--md <path>` 落盘 markdown 报告（含学习前/后对照表、被救回 id、失败原因分类）；新增 `--min-delta <pp>` 回归卡口（默认 10pp，防未来改动把「进化」能力改坏——之前只有 `delta_pp > 0` 的弱卡口）。
+- `tools/eval_tasks.py`：新增 `--md <path>` 落盘 markdown 报告（按组通过率、失败原因分类、结论）。
+- `docs/eval/`：两套评测的 markdown 报告落盘位置（`benchmark.md` / `capability.md`），README 首屏引用。
+
+### 变更
+
+- `README.md`：首屏新增「评测：扰动下把事办成」区块，贴学习前/后对照表（56.25% → 81.25%，+25.00pp，8 条救回 / 6 条硬失败），并明确口径（离线确定性链路，真实大模型评测属下一阶段）。
+- `.github/workflows/tests.yml`：两套评测加 `--json --md` 落盘；benchmark 加 `--min-delta 10` 回归卡口。
+- `tools/check_contracts.py`：新增 3 条契约（min-delta 卡口存在 / 两套评测支持 markdown 落盘 / CI 落盘且带回归卡口），契约总数 44 → 47。
+
+### 验证
+
+- 实测 `--min-delta` 卡口：过高阈值退出码 1、正常阈值退出码 0；markdown 报告成功落盘；pytest 408 passed / 1 skipped、契约 47/47、集成自检 157/157 全绿。
+
 ## [2026-11-15] · 对话页改为自绘圆角气泡（抛弃 QTextBrowser）
 
 > 本日第十版：用户明确「不要有棱角的框」。Qt 富文本（QTextBrowser）无论如何都做不了圆角（不支持 border-radius），上一版的 `<table>` 方案只能做出直角块。故将对话页整体从富文本改造为 `QScrollArea` + 自绘 `QLabel` 气泡，用 QSS 的 `border-radius` 实现真正的圆角。

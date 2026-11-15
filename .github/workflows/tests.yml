@@ -50,9 +50,14 @@ jobs:
         run: python tools/test_agent_features.py
 
       - name: Capability evaluation
-        run: python tools/eval_tasks.py
+        # 落盘 markdown 供 README / 简历引用；退出码即卡口。
+        run: |
+          python tools/eval_tasks.py --json docs/eval/capability.json --md docs/eval/capability.md
 
       - name: Adaptive benchmark (before/after learning)
         # 32 条带扰动任务，固定种子；断言「学完真的比没学之前好」，
         # 并如实保留若干硬失败样本，不用全满分蒙混过关。
-        run: python tools/benchmark.py --threshold 0.8
+        # --min-delta 10：学习后必须比学习前至少提升 10 个百分点，
+        # 防止未来改动悄悄把「进化」能力改坏（这是回归阈值，不是摆设）。
+        run: |
+          python tools/benchmark.py --threshold 0.8 --min-delta 10 --json docs/eval/benchmark.json --md docs/eval/benchmark.md --append-history

@@ -968,11 +968,77 @@ def _write_json(path: str, report: dict):
     _print(f"\n[已写出 JSON] {os.path.abspath(path)}")
 
 
+def _write_markdown(path: str, report: dict):
+    """把端到端能力评测写成 markdown，落到 docs/eval/ 供 README 引用。"""
+    meta, s = report["meta"], report["summary"]
+
+    def _group_rows():
+        rows = []
+        for g, v in s["by_group"].items():
+            rows.append(f"| {g} | {v['passed']}/{v['total']} | {v['pass_rate']:.1%} |")
+        return "\n".join(rows)
+
+    def _cat_rows():
+        name = {_CAT_ASSERT: "断言失败", _CAT_EXCEPTION: "异常",
+                _CAT_DEPENDENCY: "依赖缺失", _CAT_KNOWN: "已知缺陷"}
+        rows = []
+        for k, v in s["failure_categories"].items():
+            if v:
+                rows.append(f"| {name.get(k, k)} | {v} |")
+        return "\n".join(rows) if rows else "| （无） | 0 |"
+
+    md = f"""# 端到端能力评测报告
+
+> 由 `tools/eval_tasks.py --md` 生成 · {meta['generated_at']} · 耗时 {meta['elapsed_sec']:.2f}s
+
+## 口径
+
+- **评测对象**：用户吩咐的事，助手到底能不能办成（覆盖动作池/必填表/别名归一/质量门/计划/文档/表格/搜索等端到端链路）。
+- **网络**：{meta['network']}
+- **隔离**：{meta['isolation']}
+- **平台**：{meta['platform']} · Python {meta['python']}
+
+## 汇总
+
+- 总用例 **{s['total']}** 条，通过 **{s['passed']}** 条，通过率 **{s['pass_rate']:.1%}**
+- 阻塞性失败 {s['blocking_failures']} 条 · 已知缺陷 {s['known_defects']} 条
+- 阈值 {s['threshold']:.0%} · 退出码 {'0（放行）' if s['exit_ok'] else '1（卡口）'}
+
+## 按组通过率
+
+| 分组 | 通过/总数 | 通过率 |
+| --- | --- | --- |
+{_group_rows()}
+
+## 失败原因分类
+
+| 类别 | 条数 |
+| --- | --- |
+{_cat_rows()}
+
+## 结论
+
+{s['conclusion']}
+
+---
+
+*口径提醒：这是离线确定性链路的能力抽样，不等同于联网或真实大模型表现；与 pytest 单测互补，用于 CI 卡口与趋势跟踪。*
+"""
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    _print(f"\n[已写出 Markdown] {os.path.abspath(path)}")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description="端到端能力评测（离线、确定性、可进 CI）")
     p.add_argument("--json", dest="json_path", default=None,
                    help="把结果写成机器可读 JSON，便于以后画趋势图")
+    p.add_argument("--md", dest="md_path", default=None,
+                   help="把结果写成 markdown 报告（供 README / 简历引用）")
     p.add_argument("--threshold", type=float, default=1.0,
                    help="通过率阈值，默认 1.0（100% 才放行）")
     args = p.parse_args(argv)
@@ -987,6 +1053,12 @@ def main(argv=None) -> int:
             _write_json(args.json_path, report)
         except OSError as e:
             _print(f"写 JSON 失败：{type(e).__name__}: {e}")
+            return 1
+    if args.md_path:
+        try:
+            _write_markdown(args.md_path, report)
+        except OSError as e:
+            _print(f"写 Markdown 失败：{type(e).__name__}: {e}")
             return 1
     return 0 if report["summary"]["exit_ok"] else 1
 
