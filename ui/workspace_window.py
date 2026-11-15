@@ -48,18 +48,20 @@ VERSION = "v1.0.0"
 # 主题：用占位符替换生成 QSS，避免 f-string 把 QSS 的花括号当占位符
 # ------------------------------------------------------------
 _LIGHT = dict(
-    BG="#F4F7FA", CARD="#FFFFFF", BORDER="#DCE6EE", TEXT="#26303A",
-    MUTED="#6B7C8C", NAV="#0F2B46", NAV_TEXT="#E8F1F8",
-    NAV_ACTIVE="#1B6B9A", ACCENT="#1B6B9A", ACCENT_SOFT="#E6F1FB",
-    GOOD="#0F6E56", BAD="#A32D2D", ROW_ALT="#F7FAFC", INPUT="#FFFFFF",
-    BUBBLE_ME="#1B6B9A", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#EDF3F8",
+    BG="#F7F8FA", CARD="#FFFFFF", BORDER="#E5E7EB", TEXT="#1F2329",
+    MUTED="#8A9099", NAV="#F9FAFB", NAV_TEXT="#3A4048",
+    NAV_ACTIVE="#EEF0F3", ACCENT="#2F6FED", ACCENT_SOFT="#EDF3FF",
+    GOOD="#0F6E56", BAD="#B42318", ROW_ALT="#F7F8FA", INPUT="#FFFFFF",
+    BUBBLE_ME="#2F6FED", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#F0F2F5",
 )
+# 中性冷灰，贴近 WorkBuddy 截图：导航近黑、主区稍亮、选中态低饱和，
+# 强调色只保留一处克制的蓝，去掉原来偏亮的绿/蓝大色块。
 _DARK = dict(
-    BG="#0E141B", CARD="#161F29", BORDER="#27323E", TEXT="#E8EEF4",
-    MUTED="#94A7B8", NAV="#0A0F15", NAV_TEXT="#D7E3EE",
-    NAV_ACTIVE="#1D9E75", ACCENT="#3B82F6", ACCENT_SOFT="#1B3247",
-    GOOD="#5DCAA5", BAD="#F09595", ROW_ALT="#1B2530", INPUT="#0F1620",
-    BUBBLE_ME="#1D9E75", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#22303E",
+    BG="#18191C", CARD="#202126", BORDER="#2E3036", TEXT="#E6E8EB",
+    MUTED="#8B9099", NAV="#131417", NAV_TEXT="#B9BEC7",
+    NAV_ACTIVE="#2A2C32", ACCENT="#4C8DFF", ACCENT_SOFT="#262A33",
+    GOOD="#5DCAA5", BAD="#F09595", ROW_ALT="#1E1F24", INPUT="#202126",
+    BUBBLE_ME="#2F6FED", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#2A2C33",
 )
 
 _QSS_TEMPLATE = """
@@ -77,62 +79,74 @@ QMenu::item { padding: 8px 24px 8px 16px; }
 QMenu::item:selected { background: __ACCENT__; color: #FFFFFF; }
 QWidget#navPanel { background: __NAV__; border: none; }
 QLabel#brand { color: __NAV_TEXT__; font-size: __FS_BRAND__px;
-               font-weight: __WT_SEMIBOLD__; padding: 2px 2px; }
-QLabel#brandSub { color: __MUTED__; font-size: __FS_CAPTION__px; padding-bottom: 8px; }
-QPushButton#newConv { background: __ACCENT__; color: #FFFFFF; border: none;
-                      border-radius: 8px; padding: 10px 12px; font-size: __FS_BODY__px;
-                      font-weight: __WT_MEDIUM__; }
+               font-weight: __WT_BOLD__; padding: 2px 2px; }
+QLabel#brandSub { color: __MUTED__; font-size: __FS_MICRO__px; padding-bottom: 8px; }
+QPushButton#newConv { background: __ACCENT_SOFT__; color: __TEXT__; border: 1px solid __BORDER__;
+                      border-radius: 8px; padding: 9px 12px; font-size: __FS_SMALL__px;
+                      font-weight: __WT_MEDIUM__; text-align: left; }
 QPushButton#newConv:hover { background: __NAV_ACTIVE__; }
 QPushButton#navButton {
     color: __NAV_TEXT__; background: transparent; border: none;
-    border-radius: 8px; padding: 11px 12px; text-align: left;
-    font-size: __FS_BODY__px;
+    border-radius: 7px; padding: 9px 12px; text-align: left;
+    font-size: __FS_SMALL__px; font-weight: __WT_REGULAR__;
 }
-QPushButton#navButton:hover { background: __ACCENT_SOFT__; }
-QPushButton#navButton:checked { background: __NAV_ACTIVE__; color: #FFFFFF;
+QPushButton#navButton:hover { background: __NAV_ACTIVE__; }
+QPushButton#navButton:checked { background: __NAV_ACTIVE__; color: __TEXT__;
                                 font-weight: __WT_MEDIUM__; }
 QLabel#navGroupTitle { color: __MUTED__; font-size: __FS_MICRO__px;
                        padding: 10px 6px 2px; }
-QLabel#navGroupBody { color: __NAV_TEXT__; font-size: __FS_SMALL__px; padding: 0 6px; }
+QLabel#navGroupBody { color: __MUTED__; font-size: __FS_MICRO__px; padding: 0 6px; }
 QWidget#navFoot { background: __NAV__; border: none; }
 QPushButton#navFootBtn {
-    color: __NAV_TEXT__; background: __ACCENT_SOFT__; border: none;
-    border-radius: 8px; padding: 8px; font-size: __FS_LEAD__px;
+    color: __NAV_TEXT__; background: transparent; border: none;
+    border-radius: 7px; padding: 7px; font-size: __FS_SMALL__px;
 }
-QPushButton#navFootBtn:hover { background: __NAV_ACTIVE__; color: #FFFFFF; }
+QPushButton#navFootBtn:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
 QPushButton#updateBtn {
-    background: transparent; color: __ACCENT__; border: 1px solid __BORDER__;
-    border-radius: 7px; padding: 6px 10px; font-size: __FS_CAPTION__px;
+    background: transparent; color: __MUTED__; border: 1px solid __BORDER__;
+    border-radius: 6px; padding: 5px 9px; font-size: __FS_MICRO__px;
 }
-QPushButton#updateBtn:hover { background: __ACCENT_SOFT__; }
+QPushButton#updateBtn:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
 QWidget#topBar { background: __CARD__; border-bottom: 1px solid __BORDER__; }
 QLabel#pageTitle { color: __TEXT__; font-size: __FS_TITLE__px;
                    font-weight: __WT_SEMIBOLD__; }
-QPushButton#topIcon { background: transparent; color: __TEXT__; border: none;
-                      border-radius: 8px; padding: 7px 11px; font-size: __FS_BODY__px; }
-QPushButton#topIcon:hover { background: __ACCENT_SOFT__; }
+QPushButton#topIcon { background: transparent; color: __MUTED__; border: none;
+                      border-radius: 7px; padding: 7px 9px; font-size: __FS_SMALL__px; }
+QPushButton#topIcon:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
 QWidget#pageCard { background: __CARD__; border: 1px solid __BORDER__;
                    border-radius: 12px; }
 QTextBrowser#chatView, QTextBrowser#detailView {
     background: __BG__; color: __TEXT__; border: 1px solid __BORDER__;
     border-radius: 9px; font-size: __FS_BODY__px; padding: 10px;
 }
+/* 底部命令栏：参考图的「大圆角输入框 + 下方控制条」两层结构 */
+QWidget#commandBar { background: __BG__; }
+QWidget#composer {
+    background: __CARD__; border: 1px solid __BORDER__;
+    border-radius: 14px;
+}
 QLineEdit#commandInput {
-    background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 10px; padding: 12px 14px; font-size: __FS_LEAD__px;
+    background: transparent; color: __TEXT__; border: none;
+    padding: 2px 4px; font-size: __FS_BODY__px;
 }
-QLineEdit#commandInput:focus { border: 1.5px solid __ACCENT__; }
 QComboBox#cmdCombo {
-    background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 8px; padding: 6px 8px; font-size: __FS_SMALL__px;
+    background: transparent; color: __MUTED__; border: none;
+    border-radius: 6px; padding: 5px 8px; font-size: __FS_MICRO__px;
 }
-QComboBox#cmdCombo QAbstractItemView { background: __CARD__; color: __TEXT__; }
-QPushButton#sendBtn {
+QComboBox#cmdCombo:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
+QComboBox#cmdCombo QAbstractItemView { background: __CARD__; color: __TEXT__;
+                                       font-size: __FS_SMALL__px; }
+QPushButton#chip {
+    background: transparent; color: __MUTED__; border: none;
+    border-radius: 6px; padding: 5px 8px; font-size: __FS_MICRO__px;
+}
+QPushButton#chip:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
+QPushButton#sendRound {
     background: __ACCENT__; color: #FFFFFF; border: none;
-    border-radius: 10px; padding: 11px 18px; font-size: __FS_LEAD__px;
-    font-weight: __WT_SEMIBOLD__;
+    border-radius: 16px; font-size: __FS_BODY__px;
 }
-QPushButton#sendBtn:hover { background: __NAV_ACTIVE__; }
+QPushButton#sendRound:hover { background: __ACCENT__; }
+QPushButton#sendRound:disabled { background: __BORDER__; color: __MUTED__; }
 QPushButton#primaryButton {
     background: __ACCENT__; color: #FFFFFF; border: none;
     border-radius: 7px; padding: 8px 16px; font-size: __FS_SMALL__px;
@@ -156,10 +170,11 @@ QTableWidget#dataTable QHeaderView::section {
 }
 QListWidget#deliveryList {
     background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; font-size: __FS_BODY__px; padding: 6px;
+    border-radius: 9px; font-size: __FS_SMALL__px; padding: 6px;
 }
+QLabel#hintLabel { color: __MUTED__; font-size: __FS_SMALL__px; }
 QStatusBar#statusBar { background: __CARD__; color: __MUTED__;
-                       border-top: 1px solid __BORDER__; font-size: __FS_CAPTION__px; }
+                       border-top: 1px solid __BORDER__; font-size: __FS_MICRO__px; }
 """
 
 
@@ -473,70 +488,85 @@ class WorkspaceWindow(QMainWindow):
 
     # ---------------- 主区底部全局命令栏（对标 WorkBuddy） ----------------
     def _build_command_bar(self) -> QWidget:
+        """参考图的两层结构：上方大圆角输入框，下方一排小控件。"""
         bar = QWidget()
         bar.setObjectName("commandBar")
-        bar.setFixedHeight(66)
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(18, 10, 18, 10)
-        h.setSpacing(8)
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(16, 6, 16, 12)
+        outer.setSpacing(0)
 
         text_color, _ = _icon_palette(self._theme)
-        plus = QPushButton()
-        plus.setObjectName("topIcon")
-        plus.setIcon(icon("plus", text_color, 18))
-        plus.setIconSize(QSize(18, 18))
-        plus.setCursor(Qt.PointingHandCursor)
-        plus.setToolTip("添加上下文（@ 引用桌面文件 / 资料）")
-        plus.clicked.connect(self._add_context)
-        self._icon_buttons[plus] = ("plus", "normal")
-        h.addWidget(plus)
+        composer = QWidget()
+        composer.setObjectName("composer")
+        cv = QVBoxLayout(composer)
+        cv.setContentsMargins(14, 12, 12, 8)
+        cv.setSpacing(8)
 
+        # 上层：占位文案输入框（占位文案与参考图一致）
         self._chat_input = QLineEdit()
         self._chat_input.setObjectName("commandInput")
         self._chat_input.setPlaceholderText(
             "今天帮你做些什么？  @ 添加上下文，/ 调用技能与指令")
         self._chat_input.returnPressed.connect(self._send)
-        h.addWidget(self._chat_input, 1)
+        self._chat_input.setFixedHeight(30)
+        cv.addWidget(self._chat_input)
 
-        branch = QComboBox()
-        branch.setObjectName("cmdCombo")
-        branch.addItems(["P main"])
-        branch.setToolTip("当前分支（本项目单分支）")
-        branch.setFixedWidth(86)
-        h.addWidget(branch)
+        # 下层：一排小控件
+        ctrl = QHBoxLayout()
+        ctrl.setContentsMargins(0, 0, 0, 0)
+        ctrl.setSpacing(4)
 
-        access = QComboBox()
-        access.setObjectName("cmdCombo")
-        access.addItems(["允许完全访问", "受限模式"])
-        access.setToolTip("访问级别（界面展示，由本机权限决定）")
-        access.setFixedWidth(110)
-        h.addWidget(access)
+        def chip_btn(icon_name, tip, slot=None, width=30):
+            b = QPushButton()
+            b.setObjectName("chip")
+            b.setIcon(icon(icon_name, text_color, 16))
+            b.setIconSize(QSize(16, 16))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            b.setFixedWidth(width)
+            if slot:
+                b.clicked.connect(slot)
+            self._icon_buttons[b] = (icon_name, "normal")
+            return b
 
-        lang = QPushButton()
-        lang.setObjectName("topIcon")
-        lang.setIcon(icon("globe", text_color, 16))
-        lang.setIconSize(QSize(16, 16))
-        lang.setCursor(Qt.PointingHandCursor)
-        lang.setToolTip("界面语言：中文")
-        lang.setFixedWidth(40)
-        self._icon_buttons[lang] = ("globe", "normal")
-        h.addWidget(lang)
+        ctrl.addWidget(chip_btn("plus", "添加上下文（@ 引用桌面文件 / 资料）",
+                                self._add_context))
 
-        model = QComboBox()
-        model.setObjectName("cmdCombo")
-        model.addItems(["Hy4", "GLM-4.6V", "离线规则"])
-        model.setToolTip("展示当前可用模型；实际模型由设置 / API Key 决定")
-        model.setFixedWidth(96)
-        h.addWidget(model)
+        def combo(items, tip, width):
+            c = QComboBox()
+            c.setObjectName("cmdCombo")
+            c.addItems(items)
+            c.setToolTip(tip)
+            c.setFixedWidth(width)
+            return c
 
-        send = QPushButton("  发送")
-        send.setObjectName("sendBtn")
-        send.setIcon(icon("send", "#FFFFFF", 16))
-        send.setIconSize(QSize(16, 16))
+        branch = combo(["main"], "当前分支（本项目单分支）", 62)
+        ctrl.addWidget(branch)
+        access = combo(["允许完全访问", "受限模式"],
+                       "访问级别（界面展示，由本机权限决定）", 106)
+        ctrl.addWidget(access)
+        ctrl.addStretch(1)
+        # 模型带一个 sparkle 前缀图标感：用 icon 名做 chip + combo
+        spark = chip_btn("sparkle", "模型由设置 / API Key 决定", width=26)
+        ctrl.addWidget(spark)
+        model = combo(["Hy4", "GLM-4.6V", "离线规则"],
+                      "展示当前可用模型；实际模型由设置 / API Key 决定", 78)
+        ctrl.addWidget(model)
+        ctrl.addWidget(chip_btn("mic", "语音输入（需本机麦克风权限）", width=28))
+        # 圆形发送按钮（参考图：右下角圆形向上箭头）
+        send = QPushButton()
+        send.setObjectName("sendRound")
+        send.setIcon(icon("arrow-up", "#FFFFFF", 18))
+        send.setIconSize(QSize(18, 18))
+        send.setFixedSize(32, 32)
         send.setCursor(Qt.PointingHandCursor)
+        send.setToolTip("发送（回车同效）")
         send.clicked.connect(self._send)
-        self._icon_buttons[send] = ("send", "white")
-        h.addWidget(send)
+        self._icon_buttons[send] = ("arrow-up", "white")
+        ctrl.addWidget(send)
+
+        cv.addLayout(ctrl)
+        outer.addWidget(composer)
         return bar
 
     def _build_status(self) -> QStatusBar:

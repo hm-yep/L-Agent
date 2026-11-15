@@ -289,11 +289,20 @@ def test_workspace_qss_has_unified_font_stack(fw_and_window):
     assert '"Microsoft YaHei", sans-serif' not in qss
 
 
-def test_font_sizes_use_readable_scale(fw_and_window):
-    """字号阶梯整体调大：正文 15、页面标题 21、品牌 24。"""
+def test_font_sizes_match_workbuddy_reference(fw_and_window):
+    """字号阶梯对标 WorkBuddy 截图：精致克制、层级分明，不靠一味放大。
+
+    已开高 DPI + 现代字体栈，13~17px 就足够锐利清晰；上一轮把正文调到
+    15 / 标题 21 / 品牌 24 反而偏大，这里按参考图实测值重新锚定。
+    """
     from ui.typography import SZ
-    assert SZ["body"] >= 15, "正文不能太小看不清"
-    assert SZ["title"] > SZ["body"] > SZ["caption"]
+    assert SZ["body"] == 14, "正文对齐参考图 14px"
+    assert SZ["title"] == 17, "页面标题对齐参考图 17px"
+    assert SZ["brand"] == 15, "品牌对齐参考图 15px"
+    assert SZ["small"] == 13, "导航项对齐参考图 13px"
+    # 层级：标题 > 正文 > 辅助；字号区间整体收敛在 11~17，不再出现 21/24
+    assert SZ["title"] > SZ["body"] > SZ["small"] > SZ["caption"]
+    assert max(SZ.values()) <= 17, "不应再有比参考图标题更大的字号"
     _fw, w, _path = fw_and_window
     qss = w.styleSheet()
     assert "font-size: %dpx" % SZ["body"] in qss
