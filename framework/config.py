@@ -377,6 +377,19 @@ API_SESSION_TTL_SEC = 3600          # 会话空闲过期时间
 API_MAX_SESSIONS = 512              # 会话表上限（防伪造 sid 无限增长）
 
 # ============================================================
+# 可验证执行 / 自适应（L1：能证明；L2：能变好）
+# 全部可关；任一子系统初始化失败都只降级，不影响桌面版主链路。
+# ============================================================
+TRAJECTORY_ENABLED = True       # append-only 事件流（轨迹、哈希链、任意轮回滚）
+PREFERENCE_LEARNING = True      # 从自然对话里自动发现偏好（无需用户说「记住」）
+PREFERENCE_NOTIFY = True        # 发现偏好时记一条工作日志（不弹气泡打断用户）
+EVOLUTION_ENABLED = True        # 从失败/质量门/撤销里归纳规则，下次自动调整
+PLAN_DAG_ENABLED = True         # 计划编译成依赖图，执行前静态校验
+EFFECT_SPEC_STRICT = False      # True 时契约前置校验不通过就拒绝执行（默认只记录）
+MAX_PREFERENCES = 40
+MAX_RULES = 24
+
+# ============================================================
 # 用户设置持久化（%APPDATA%\DesktopPet\user_settings.json）
 # 设置界面填写的 API Key / 接口地址 / 模型 / 性格 / 音效 都会存到这里。
 # 固定放用户目录（不放 exe 旁边）：exe 被挪到别的文件夹、直接在压缩包里

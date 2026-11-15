@@ -13,6 +13,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 轨迹 / 偏好 / 规则是新增的落盘子系统，同样隔离到临时目录，
+# 别让 157 项自检把用户真实的 data/ 写脏。
+os.environ.setdefault(
+    "LINGLING_DATA_DIR",
+    tempfile.mkdtemp(prefix="lingling_selftest_"))
 
 PASS = 0
 FAIL = 0

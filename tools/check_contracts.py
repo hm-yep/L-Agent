@@ -146,6 +146,29 @@ def main() -> int:
     check("read_doc / analyze_data 走文件白名单",
           guard.exists() and core_src.count("validate_read_path(") >= 2)
 
+    print("=== 可验证执行（L1/L2）===")
+    from framework import effect_spec
+    spec_problems = effect_spec.validate_specs()
+    check("30 个动作的副作用契约完备", not spec_problems,
+          "; ".join(spec_problems[:3]))
+    from framework import evolution, plan_graph, preference, trajectory
+    check("轨迹/偏好/进化/计划图模块可用",
+          all([hasattr(trajectory, "TrajectoryStore"),
+               hasattr(preference, "PreferenceStore"),
+               hasattr(evolution, "RuleStore"),
+               hasattr(plan_graph, "compile_plan")]))
+    core_src = core_path.read_text(encoding="utf-8")
+    for token in ("_learn_preferences(text)", "self.prefs.doc_style()",
+                  "rollback_to(", "_adjust_action(action)", "_traj_end()",
+                  "affected_subgraph", "prefs_text"):
+        check(f"主链路接入 {token}", token in core_src)
+    bench_src = (ROOT / "tools" / "benchmark.py").read_text(encoding="utf-8")
+    check("扰动评测含学习前后对照",
+          "class LearningAdapter" in bench_src and "def compare(" in bench_src)
+    trace_src = (ROOT / "tools" / "trace_view.py").read_text(encoding="utf-8")
+    check("时间线渲染对撤销账本脱敏",
+          "undo_ledger" in trace_src and "html.escape" in trace_src)
+
     print("=== 文档口径 ===")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     check("README 不再使用过时的 119 项数字", "119 项" not in readme)

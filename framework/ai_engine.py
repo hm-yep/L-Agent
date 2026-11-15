@@ -251,7 +251,7 @@ class AIWorker(QThread):
 
     def __init__(self, message: str, history: list, personality: str,
                  parent=None, facts: str = "", notes: str = "",
-                 skills: str = ""):
+                 skills: str = "", prefs_text: str = ""):
         super().__init__(parent)
         self.message = message
         self.history = history
@@ -259,6 +259,9 @@ class AIWorker(QThread):
         self.facts = (facts or "").strip()   # 长期记忆（注入系统提示词）
         self.notes = (notes or "").strip()   # 检索资料（搜索/读文档的成果）
         self.skills = (skills or "").strip()  # 技能清单（run_skill 有名可挑）
+        # 自动学到的用户偏好（不是用户显式说「记住」的那份），作为动态块
+        # 追加在系统提示词之后；SYSTEM_PROMPT 常量本身保持逐字不变。
+        self.prefs_text = (prefs_text or "").strip()
         self._stopped = False
 
     def stop(self):
@@ -309,6 +312,13 @@ class AIWorker(QThread):
         if self.skills:
             # 技能清单：catalog_text 自带标题和说明，这里只拼接
             prompt += "\n" + self.skills
+        # getattr 兜底：单测会直接用 SimpleNamespace 调 _messages（不构造
+        # 完整 AIWorker），新增字段不能让这种鸭子类型调用炸掉。
+        prefs_text = getattr(self, "prefs_text", "") or ""
+        if prefs_text:
+            # 偏好由 framework/preference.py 从自然对话里自动归纳，
+            # 与长期记忆分开：这一块会随用户改主意而实时变化。
+            prompt += "\n\n" + prefs_text
         messages = [{"role": "system", "content": prompt}]
         messages.extend(self.history[-config.MEMORY_MAX_TURNS * 2:])
         messages.append({"role": "user", "content": self.message})

@@ -1,6 +1,6 @@
-# 5 分钟上手与验收清单
+# 5 分钟上手与验收清单（7 条断言）
 
-本文给评审用：装好、启动、按清单逐条手动验证。5 条断言里第 1、2、3、5 条不需要 API Key；第 4 条需要先配一把有效 Key 存下技能，再故意把 Key 改错。
+本文给评审用：装好、启动、按清单逐条手动验证。7 条断言里第 1、2、3、5、7 条不需要 API Key；第 4 条需要先配一把有效 Key 存下技能，再故意把 Key 改错；第 6 条的偏好抽取与落盘不依赖模型，但「回复变短」这类措辞变化在配 Key 后更直观。
 
 命令与口径与 [README.md](../README.md) 一致：项目名「凌零 · 桌面 AI 数字员工」，仓库 github.com/hm-yep/L-Agent。
 
@@ -101,16 +101,57 @@ python main.py
 - 无 Key 时内容是离线示例内容，说明文档工厂这条链路不依赖真实模型也能跑通；
 - 生成文件不会被误当成用户原有文件被撤销删掉（见 [ADR 0001](adr/0001-undo-by-world-diff.md) 的删文件守卫）。
 
+### 断言 6：偏好自动发现，不用先说「记住」
+
+**操作**
+
+1. 无 Key（或任意）状态启动，直接说「我喜欢深色 PPT」；再说「做个 PPT 介绍凌零」，保存后打开 `.pptx` 看配色。
+2. 说「简洁点」，再问一句需要展开说明的问题，对比前后回复长度。
+3. 说「以后别联网」，再说「查一下新能源汽车销量」。
+4. 打开 `data/preferences.json`，核对里面有没有原话。
+
+**预期现象**
+
+- 第二份 PPT 默认用深色主题；若这一句里又显式指定了样式，仍以当次指定为准；
+- 「简洁点」之后回答按简洁口径（配 Key 走真实模型时最直观；偏好条目本身在 `data/preferences.json` 里可核对）；
+- 「以后别联网」之后 `web_search` 动作在执行前被跳过，气泡说明按偏好不联网、改用已有资料作答；
+- `data/preferences.json` 里只有命中的控制短语与原话哈希，没有「我喜欢深色 PPT」这类原话明文；偏好抽取是纯本地规则，不依赖模型、不需要说「记住」。原理见 [ADR 0003](adr/0003-preference-and-evolution.md)。
+
+### 断言 7：问题驱动进化、事件流时间线与任意轮回滚
+
+**操作**
+
+1. 连续两轮制造同一类失败，例如两次让检索结果与查询零重合、或两次读同一个不存在的路径；每轮收口时会归纳规则，同类证据满 2 条才生成。
+2. 第三轮再触发同类动作，观察动作执行前是否被自动调整（换词重搜 / 跳过坏路径 / 执行前确认）。
+3. 在仓库根目录跑：
+
+```bash
+python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html
+```
+
+打开生成的 `timeline.html`，按轮查看 `failure` / `quality` / `rule` 事件、哈希链与「只看失败」过滤。
+4. 做几轮会改动世界的动作（加待办、记事实），从时间线的轮分组或 `data/trajectory.jsonl` 里取目标轮的 `turn_id`；给 `undo_last` 传 `to` 参数（值为该 `turn_id`），或在调试侧直接调用 `fw.rollback_to(turn_id)`。
+
+**预期现象**
+
+- 单次同类失败只进 `pending`，不生成规则；第 2 条独立事件后才在 `rule` 事件里看到规则族与置信度；置信度按 Beta(1,1) 后验均值计算，连续失败且无成功成效的规则会自动停用；
+- 时间线是单文件 HTML：按轮分组、失败高亮、哈希链、深浅色自适应、HTML 转义、无 CDN；撤销账本只显示数量、不显示明细；
+- `fw.rollback_to(turn_id)` 从目标轮之后的 `turn_end` 事件逆序取回撤销账本逐轮执行，能把世界回退到指定轮，而不只是撤上一轮；
+- 机器对照可跑 `python tools/benchmark.py`（学习前 56.25% → 学习后 81.25%，+25.00 pp，8 条任务被救回，仍保留 6 条硬失败）。原理与代价见 [ADR 0003](adr/0003-preference-and-evolution.md)、[ADR 0004](adr/0004-verifiable-execution.md)。
+
 ## 验收判定
 
-5 条断言的预期现象全部出现即通过。任一条不符，请记录气泡原文、当时的 Key 状态与复现步骤。
+7 条断言的预期现象全部出现即通过。任一条不符，请记录气泡原文、当时的 Key 状态与复现步骤。
 
-另外可跑机器校验，注意三类口径不要混称「测试套件」：
+另外可跑机器校验，注意各类口径不要混称「测试套件」：
 
 | 口径 | 命令 | 实测结果（2026-11-15） |
 |---|---|---|
-| pytest 单测 | `pytest -q` | 200 passed / 1 skipped |
+| pytest 单测 | `pytest -q` | 384 passed / 1 skipped |
+| 契约检查 | `python tools/check_contracts.py` | 34/34 通过 |
 | tools 集成自检 | `python tools/test_agent_features.py` | 157 通过 / 0 失败 |
+| 能力评测集 | `python tools/eval_tasks.py` | 38/38 通过 |
 | 启动冒烟 | `python main.py --selftest` | 35/35 通过（离屏跳过 2 项布局几何断言） |
+| 扰动评测 | `python tools/benchmark.py` | 学习前 56.25% → 学习后 81.25%（+25.00 pp） |
 
-CI 还会跑契约检查（`tools/check_contracts.py`）、启动冒烟与端到端能力评测集（`tools/eval_tasks.py`）。完整能力边界见 [架构说明.md](架构说明.md)。
+CI 还会跑契约检查（`tools/check_contracts.py`）、启动冒烟与端到端能力评测集（`tools/eval_tasks.py`）；扰动评测（`tools/benchmark.py`）是离线确定性链路的手动对照口径。设计决策见 [ADR 0003](adr/0003-preference-and-evolution.md)、[ADR 0004](adr/0004-verifiable-execution.md)，完整能力边界见 [架构说明.md](架构说明.md)。

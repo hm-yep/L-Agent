@@ -291,6 +291,34 @@ class Framework(QObject):
         self._last_skill_offer_at = 0.0             # 提议保存的冷却，防碎碎念
         self.skills = skill_store.SkillStore()
 
+        # ---- L1/L2 自适应子系统：惰性加载 + 失败降级 ----
+        # 任何一个新模块出问题都只记日志、置 None，桌面版主链路照常运行。
+        self.trajectory = None      # append-only 事件流（哈希链、任意轮回滚）
+        self.prefs = None           # 自动学到的用户偏好
+        self.rules = None           # 从失败里归纳出的调整规则
+        self._current_turn_id = ""
+        self._current_world_hash = None
+        self._turn_journaled = False
+        self._traj_ledger_written = False
+        try:
+            if config.TRAJECTORY_ENABLED:
+                from framework.trajectory import TrajectoryStore
+                self.trajectory = TrajectoryStore()
+        except Exception as e:      # noqa: BLE001 新能力绝不拖垮桌面版
+            logger.warning(f"[Framework] 轨迹子系统不可用（已降级）: {e}")
+        try:
+            if config.PREFERENCE_LEARNING:
+                from framework.preference import PreferenceStore
+                self.prefs = PreferenceStore()
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 偏好子系统不可用（已降级）: {e}")
+        try:
+            if config.EVOLUTION_ENABLED:
+                from framework.evolution import RuleStore
+                self.rules = RuleStore()
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 进化子系统不可用（已降级）: {e}")
+
         # 任务台：提醒 + 待办（JSON 持久化），定时轮询到期提醒
         self.tasks = TaskBoard()
         self._reminder_timer = QTimer(self)
@@ -407,6 +435,161 @@ class Framework(QObject):
             logger.info(f"[Framework] 性格切换: {personality}")
 
     # ============================================================
+    # 可验证执行：轨迹 / 偏好 / 进化
+    # 所有入口都带降级包裹——新增能力出问题，只记日志不影响原有动作链。
+    # ============================================================
+    def _traj_event(self, kind: str, **fields):
+        t = self.trajectory
+        if t is None:
+            return None
+        try:
+            return t.append(kind, **fields)
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 轨迹写入失败（已忽略）: {e}")
+            return None
+
+    def _traj_start(self, text: str):
+        t = self.trajectory
+        if t is None:
+            return
+        try:
+            from framework.trajectory import world_digest
+            pre = world_digest(self._world_before) \
+                if self._world_before is not None else None
+            self._current_world_hash = pre
+            self._current_turn_id = t.start_turn(
+                source="user", pre_hash=pre,
+                note=f"指令 {len(text or '')} 字（内容不落盘）")
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 开轮失败（已忽略）: {e}")
+
+    def _traj_end(self, ok: bool = True):
+        t = self.trajectory
+        if t is None:
+            return
+        try:
+            from framework.trajectory import world_digest
+            post = world_digest(self._world_snapshot())
+            ledger = None
+            # 一轮只写一次账本：计划执行中 _review_effects 可能被调用多次
+            if self._turn_journaled and not self._traj_ledger_written:
+                ledger = self._last_undo
+                self._traj_ledger_written = True
+            t.end_turn(post_hash=post, undo_ledger=ledger, ok=ok)
+            self._current_world_hash = post
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 收轮失败（已忽略）: {e}")
+        self._evolve()
+
+    def _evolve(self):
+        """每轮收口：把最近的问题事件喂给规则库，让系统下次自动调整。"""
+        if self.rules is None or self.trajectory is None \
+                or not config.EVOLUTION_ENABLED:
+            return
+        try:
+            changed = self.rules.learn(self.trajectory.events(limit=200)) or []
+            for r in changed:
+                self._traj_event(
+                    "rule", source="system",
+                    payload={"rule_id": r.get("id"),
+                             "family": r.get("family"),
+                             "confidence": r.get("confidence")},
+                    note=f"归纳出规则 {r.get('family', '')}")
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 规则归纳失败（已忽略）: {e}")
+
+    def _learn_preferences(self, text: str):
+        """从用户这句自然话里自动发现偏好（不需要用户说「记住」）。"""
+        if self.prefs is None or not config.PREFERENCE_LEARNING:
+            return
+        try:
+            changed = self.prefs.observe(
+                text, source_turn=self._current_turn_id) or []
+            for p in changed:
+                self._traj_event(
+                    "preference", source="user",
+                    payload={"key": p.get("key"), "value": p.get("value"),
+                             "confidence": p.get("confidence")},
+                    note=f"发现偏好 {p.get('key', '')}")
+            if changed and config.PREFERENCE_NOTIFY:
+                keys = "、".join(str(p.get("key")) for p in changed[:3])
+                self.tasks.log_work("preference", f"自动记下偏好：{keys}")
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Framework] 偏好学习失败（已忽略）: {e}")
+
+    def _adjust_action(self, action: dict):
+        """执行前：应用偏好与进化规则，并做契约前置校验。返回 None = 跳过。"""
+        name = action.get("action", "")
+        if name == "web_search" and self.prefs is not None:
+            try:
+                if not self.prefs.allow_web_search():
+                    self._traj_event("rule", action=name, source="system",
+                                     note="按用户偏好跳过联网检索")
+                    self.show_bubble("按你的偏好，这次不联网，我用已有资料来答。")
+                    return None
+            except Exception:       # noqa: BLE001
+                pass
+        ctx = {"action": name, "query": action.get("query", ""),
+               "path": action.get("path", ""),
+               "doc_type": action.get("doc_type", ""),
+               "turn_id": self._current_turn_id}
+        adj = {}
+        if self.rules is not None and config.EVOLUTION_ENABLED:
+            try:
+                adj = self.rules.apply(ctx) or {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[Framework] 规则应用失败（已忽略）: {e}")
+        if adj.get("skip_action"):
+            self._traj_event("rule", action=name, source="system",
+                             note=adj.get("note") or "规则建议跳过")
+            return None
+        if adj.get("search_suffix") and name == "web_search":
+            action = dict(action)
+            action["query"] = (str(action.get("query") or "") + " "
+                               + str(adj["search_suffix"])).strip()
+        if adj.get("rule_ids"):
+            self._traj_event("rule", action=name, source="system",
+                             payload={"rule_ids": adj["rule_ids"]},
+                             note=adj.get("note") or "应用了学到的规则")
+        try:
+            from framework.effect_spec import check_pre
+            violations = check_pre(action, {}) or []
+            if violations:
+                self._traj_event("failure", action=name, ok=False,
+                                 note="；".join(map(str, violations))[:200])
+                if config.EFFECT_SPEC_STRICT:
+                    return None
+        except Exception:           # noqa: BLE001
+            pass
+        return action
+
+    def rollback_to(self, turn_id: str) -> dict:
+        """回滚到任意轮：把目标轮之后的撤销账本逆序逐轮执行。
+
+        账本存在 turn_end 事件里，所以不需要为每个动作手写 undo；
+        这正是事件溯源比「只存上一轮快照」更深的地方。
+        """
+        if self.trajectory is None:
+            return {"ok": False, "reason": "轨迹未启用"}
+        ledgers = self.trajectory.rollback_ledgers(turn_id)
+        if not ledgers:
+            return {"ok": False, "reason": f"找不到轮次 {turn_id} 的账本",
+                    "turns": 0}
+        total_ops = 0
+        for ledger in ledgers:
+            ops = effect_journal.undo_ops(ledger.get("items") or [])
+            total_ops += len(ops)
+            try:
+                effect_journal.apply_ops(ops, self._undo_api(),
+                                         self._turn_started_at)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[Framework] 回滚部分操作失败: {e}")
+        self._traj_event("undo", source="user",
+                         payload={"target": turn_id, "ledgers": len(ledgers)},
+                         note=f"回滚到 {turn_id}")
+        return {"ok": True, "turns": len(ledgers), "ops": total_ops}
+
+    # ============================================================
     # AI 线程的唯一出入口
     # ============================================================
     def _start_ai_worker(self, message: str, *, history=None,
@@ -445,6 +628,16 @@ class Framework(QObject):
                     pass
 
         kwargs = {"parent": self}
+        # 自动学到的偏好作为动态块注入；只有非空时才传这个 kwarg，
+        # 保证 157 项集成自检里那个「一调用就炸」的假 AIWorker 签名不受影响。
+        if getattr(self, "prefs", None) is not None \
+                and config.PREFERENCE_LEARNING:
+            try:
+                prefs_text = (self.prefs.as_prompt() or "").strip()
+                if prefs_text:
+                    kwargs["prefs_text"] = prefs_text
+            except Exception:       # noqa: BLE001
+                pass
         if facts is not None:
             kwargs["facts"] = facts
         if notes is not None:
@@ -547,12 +740,16 @@ class Framework(QObject):
             if self._fast_intent(text, config.UNDO_WORDS):
                 self._said(text)
                 self._begin_turn(text, journal=False)
+                self._learn_preferences(text)
                 self._do_undo_last({})
+                self._traj_end()
                 return
             if self._fast_intent(text, config.SKILL_SAVE_WORDS):
                 self._said(text)
                 self._begin_turn(text, journal=False)
+                self._learn_preferences(text)
                 self._do_save_skill({})
+                self._traj_end()
                 return
             if self._fast_intent(text, config.SKILL_LIST_WORDS):
                 self._said(text)
@@ -569,6 +766,7 @@ class Framework(QObject):
         # 只记录长度便于排查"这一轮有没有进来"，内容留在内存与聊天面板里。
         logger.info(f"[Framework] 用户输入: <{len(text)} 字，内容不落盘>")
         self._begin_turn(text)
+        self._learn_preferences(text)   # 不用用户说「记住」，自己发现偏好
         self._reference_notes = []      # 新话题：清空上一话题的检索资料
         self._search_quality_retried = False   # 新话题：质量纠正次数清零
         self._doc_quality_retried = False
@@ -588,6 +786,8 @@ class Framework(QObject):
             self._on_ai_finished_inner(actions)
         except Exception:  # noqa: BLE001
             logger.exception("[Framework] 处理 AI 回复时出错")
+            self._traj_event("failure", source="model", ok=False,
+                             note="处理 AI 回复时异常")
             self._clear_plan_transient()
             self._busy = False
             self._action_queue = []
@@ -791,6 +991,8 @@ class Framework(QObject):
 
     def _on_ai_failed(self, error: str):
         """AI 请求失败：明确告知用户并复位状态（不卡死、不留悬空状态）"""
+        self._traj_event("failure", source="model", ok=False,
+                         note=str(error)[:200])
         self._clear_plan_transient()
         self._busy = False
         self._action_queue = []
@@ -881,10 +1083,21 @@ class Framework(QObject):
             return
 
         action = self._action_queue.pop(0)
+        self._finish_done = False          # 本动作是否已收尾（防重复推进）
+        action = self._adjust_action(action)
+        if action is None:
+            # 偏好或学到的规则建议跳过：如实记账，别把「没做」说成「做了」
+            self._note_plan_failure("偏好/规则建议跳过该动作")
+            self._finish_action()
+            return
         self._current_action_name = action["action"]
         self._turn_actions.append(action)   # 轨迹：收口时抽技能、算撤不回项
-        self._finish_done = False          # 本动作是否已收尾（防重复推进）
         self._arm_chain_watchdog(action["action"])
+        self._traj_event(
+            "action", action=action["action"], source="model",
+            pre_hash=self._current_world_hash,
+            payload={"params": {k: v for k, v in action.items()
+                                if k not in ("content", "style")}})
         # 只记动作名：完整 action 字典里可能有 path / fact / text 等用户数据
         logger.info(f"[Framework] 执行动作: {action['action']}")
         try:
@@ -892,6 +1105,9 @@ class Framework(QObject):
         except Exception:  # noqa: BLE001 单个动作出错不闪退、不停摆
             logger.exception(
                 f"[Framework] 动作 {self._current_action_name} 执行异常，跳过")
+            self._traj_event("failure", action=self._current_action_name,
+                             source="system", ok=False,
+                             note="动作执行异常，已跳过")
             self.show_bubble("这一步出了点小状况，我先跳过继续。")
             if not self._finish_done:
                 self._finish_action()
@@ -1079,6 +1295,9 @@ class Framework(QObject):
         self._turn_started_at = time.time()
         self._world_before = self._world_snapshot() \
             if journal and config.UNDO_ENABLED else None
+        self._turn_journaled = bool(self._world_before is not None)
+        self._traj_ledger_written = False
+        self._traj_start(text)
 
     def _world_snapshot(self) -> dict:
         """读五个可观测面的当前值（音量/待办/提醒/交付/长期记忆）"""
@@ -1097,7 +1316,15 @@ class Framework(QObject):
             facts=list(self.memory.facts))
 
     def _review_effects(self, offer: bool = True):
-        """本轮动作跑完：算差集存好账（撤销用它），顺带决定要不要提议存技能"""
+        """本轮动作跑完：算差集存好账（撤销用它），并把事件轨迹收口。"""
+        try:
+            self._review_effects_inner(offer)
+        finally:
+            # 所有早退路径（没记账 / 本轮本身就是撤销）也要留下 turn_end，
+            # 否则哈希链断在这里，回放与任意轮回滚就少了一轮。
+            self._traj_end()
+
+    def _review_effects_inner(self, offer: bool = True):
         actions, self._turn_actions = self._turn_actions, []
         if actions:
             self._last_turn_actions = actions
@@ -1163,6 +1390,22 @@ class Framework(QObject):
 
     def _do_undo_last(self, action: dict):
         """undo_last 动作：把上一轮能撤的都退回去，撤不成的逐条说原因"""
+        self._traj_event(
+            "undo", action="undo_last", source="user",
+            ok=bool(self._last_undo),
+            note="用户请求撤销上一轮" if self._last_undo else "撤销请求但本轮无账")
+        # 任意轮回滚：动作参数 to 给 turn_id（也可直接调用 fw.rollback_to）。
+        # 账本存在 turn_end 事件里，不必为每个动作重写一套撤销逻辑。
+        target = str((action or {}).get("to") or "").strip()
+        if target and target not in ("last", "上一轮", "0"):
+            res = self.rollback_to(target)
+            if res.get("ok"):
+                self.show_bubble(f"已回滚 {res['turns']} 轮"
+                                 f"（共 {res['ops']} 项逆操作）。")
+            else:
+                self.show_bubble(f"回滚没成：{res.get('reason', '未知原因')}。")
+            self._finish_action()
+            return
         undo = self._last_undo
         if not undo:
             self.set_emotion("sweat")
@@ -1659,9 +1902,24 @@ class Framework(QObject):
             self._note_plan_failure("文档内容为空")
             self._finish_action()
             return
-        # 质量门：渲染前体检内容（软失败自我纠正——单薄内容先纠正再产出）
+        # 质量门：渲染前体检内容（软失败自我纠正——单薄内容先纠正再产出）。
+        # 学到的规则会抬高门槛：被「内容太单薄」坑过之后，标准真的会变严。
         from framework.quality_gate import assess_doc_spec
         gate = assess_doc_spec(kind, content)
+        if self.rules is not None and config.EVOLUTION_ENABLED \
+                and kind == "ppt" and gate.get("ok"):
+            try:
+                stricter = int((self.rules.apply(
+                    {"action": "create_doc", "doc_type": kind}) or {})
+                    .get("min_slides") or 0)
+                slides = content.get("slides") if isinstance(content, dict) else None
+                if stricter and isinstance(slides, list) \
+                        and len(slides) < stricter:
+                    gate = {"ok": False,
+                            "reason": f"按学到的规则正文至少 {stricter} 页"
+                                      f"（当前 {len(slides)} 页）"}
+            except Exception as e:      # noqa: BLE001
+                logger.warning(f"[Framework] 规则门槛读取失败（已忽略）: {e}")
         if not gate["ok"]:
             plan_running = (self._plan is not None
                             and self._plan.get("status") == "running")
@@ -1682,10 +1940,19 @@ class Framework(QObject):
                              "先做一版你看看，不满意随时让我重做。")
 
         ext = DOC_TYPE_EXTS[kind]
-        # 用户要的样式与内容合并交给渲染器（style 与 content 平级传入）
-        if action.get("style") and isinstance(content, dict):
+        # 样式优先级：自动学到的偏好是默认值，用户这一句的显式要求更高。
+        # 说「我喜欢深色 PPT」之后，下一份 PPT 会自己变深色，无需重复交代。
+        style = {}
+        if self.prefs is not None and config.PREFERENCE_LEARNING:
+            try:
+                style.update(self.prefs.doc_style() or {})
+            except Exception as e:      # noqa: BLE001
+                logger.warning(f"[Framework] 偏好样式读取失败（已忽略）: {e}")
+        if isinstance(action.get("style"), dict):
+            style.update(action["style"])
+        if style and isinstance(content, dict):
             content = dict(content)
-            content["style"] = action["style"]
+            content["style"] = style
         # 文件改写流程会带预设输出路径（原名_修改.ext），不弹保存对话框；
         # 用户指定了保存位置（桌面/文档/下载）时也免弹窗，直接保存
         preset = action.get("save_path") or ""
@@ -1746,6 +2013,10 @@ class Framework(QObject):
     def _doc_quality_followup(self, kind: str, reason: str):
         """文档软失败自我纠正：把质量体检结果发回模型，要求重写内容。
         模型返回新的 create_doc 动作后按正常链路执行（含样式/位置）。"""
+        self._traj_event(
+            "quality", action="create_doc", source="system", ok=False,
+            payload={"doc_type": kind, "reason": str(reason)},
+            note=f"文档内容不达标：{reason}")
         self._doc_quality_retried = True
         self._busy = True
         self._suppress_fallback = True       # 纠正轮不走关键词兜底
@@ -1937,6 +2208,20 @@ class Framework(QObject):
         直接替换剩余步骤并自动继续执行——重规划必须保持无人值守。
         """
         steps = action.get("steps") or []
+        if config.PLAN_DAG_ENABLED:
+            try:
+                from framework.plan_graph import (
+                    compile_plan, validate as validate_plan, plan_summary)
+                graph = compile_plan(list(steps))
+                issues = validate_plan(graph)
+                self._traj_event(
+                    "plan", source="model", ok=not issues,
+                    payload={"steps": [str(s)[:60] for s in steps],
+                             "summary": plan_summary(graph),
+                             "issues": issues[:5]},
+                    note="计划已编译为依赖图并完成静态校验")
+            except Exception as e:      # noqa: BLE001 DAG 只是增强，不能挡住计划
+                logger.warning(f"[Framework] 计划图编译失败（已降级）: {e}")
         if self._plan_auto_plan and self._plan is not None \
                 and self._plan.get("status") == "running":
             self._plan_auto_plan = False
@@ -2143,6 +2428,9 @@ class Framework(QObject):
 
     def _note_plan_failure(self, reason: str):
         """计划执行中某步受阻：记下原因，本轮收口后触发自动重规划"""
+        # 失败是「自我进化」的原料：先落进轨迹，收口时由规则库归纳
+        self._traj_event("failure", action=self._current_action_name,
+                         source="system", ok=False, note=str(reason)[:200])
         plan = self._plan
         if plan is None or plan.get("status") != "running":
             return
@@ -2170,7 +2458,26 @@ class Framework(QObject):
         done = min(self._plan_done, len(steps))
         progress = "\n".join(f"{'✔' if i < done else '○'} {s}"
                              for i, s in enumerate(steps))
-        message = (f"【计划重规划】计划执行遇到问题，请你调整剩余步骤。\n"
+        # 增量重算：只把失败节点及其传递后继交给模型调整，
+        # 而不是整轮推倒重写。这是计划依赖图真正被用上的地方。
+        focus = ""
+        if config.PLAN_DAG_ENABLED:
+            try:
+                from framework.plan_graph import compile_plan, affected_subgraph
+                graph = compile_plan(list(steps))
+                node_ids = [n["id"] for n in graph.get("nodes", [])]
+                if node_ids:
+                    affected = affected_subgraph(
+                        graph, node_ids[min(done, len(node_ids) - 1)])
+                    focus = ("\n系统已算出只需重算这几步（其余已完成的不要动）："
+                             + "、".join(affected[:6]) + "。")
+                    self._traj_event(
+                        "plan", source="system",
+                        payload={"affected": affected, "done": done},
+                        note="增量重算：只调整受影响的子图")
+            except Exception as e:      # noqa: BLE001
+                logger.warning(f"[Framework] 受影响子图计算失败（已降级）: {e}")
+        message = (f"【计划重规划】计划执行遇到问题，请你调整剩余步骤。{focus}\n"
                    f"原计划进度：\n{progress}\n"
                    f"遇到的问题：{reason}\n"
                    f"系统提示：只返回一个 show_plan 动作，steps 列出调整后"
@@ -2351,6 +2658,12 @@ class Framework(QObject):
     def _handle_search_quality(self, query: str, gate: dict):
         """搜索软失败自我纠正：计划内交重规划；单发先换词重试一次，
         仍不达标则带【质量预警】降级使用（让模型谨慎引用并说明局限）"""
+        if not gate.get("ok", True):
+            self._traj_event(
+                "quality", action="web_search", source="system", ok=False,
+                payload={"query": str(query)[:80],
+                         "reason": str(gate.get("reason", ""))},
+                note=f"检索质量不达标：{gate.get('reason', '')}")
         plan_running = (self._plan is not None
                         and self._plan.get("status") == "running")
         if plan_running:

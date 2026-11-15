@@ -56,7 +56,15 @@ def resource_path(relative: str) -> str:
 
 
 def app_data_dir() -> str:
-    """可写数据目录（记忆文件、日志），打包后也不写进程序目录"""
+    """可写数据目录（记忆文件、日志、轨迹、偏好、规则），打包后也不写进程序目录。
+
+    测试用 `LINGLING_DATA_DIR` 覆盖：pytest / 集成自检会在 import framework
+    之前设好它，保证轨迹与偏好这类新增落盘文件绝不写脏用户的真实 data/。
+    """
+    override = os.environ.get("LINGLING_DATA_DIR", "").strip()
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
     if getattr(sys, "frozen", False):
         # exe 位于 <项目>\dist\ 时与开发版共用 <项目>\data，两版记录不分裂；
         # exe 被单独挪走时退回 exe 旁边的 data
