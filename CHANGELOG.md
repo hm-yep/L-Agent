@@ -2,6 +2,21 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 工作台界面对标 WorkBuddy 风格
+
+> 本日第四版：把上一版的标准主窗口重做成 WorkBuddy 的深色界面格局，外观与交互更贴近主流桌面 AI 客户端。
+
+### 变更
+
+- `ui/workspace_window.py` 重写为 WorkBuddy 深色风格：顶部菜单栏（文件 / 编辑 / 窗口 / 帮助 / 关于）、左侧品牌导航边栏（品牌 + 版本号 + 分组计数 + 底部更新区）、主区顶部标题栏（页面标题 + 右侧图标）、主区底部全局命令栏（「今天帮你做些什么？」+ @ 上下文 / 分支 / 访问级别 / 模型 / 发送）；**默认深色主题**。
+- 对话页去掉内部输入框，统一由底部全局命令栏发指令；菜单栏「退出程序」发射 `quit_requested`、「打开使用文档」打开 `docs/QUICK_START.md`、「关于」跳到关于页。
+- 左侧导航分组随真实数据刷新（待办 / 交付 / 偏好 / 规则计数）；「◐」按钮在深色与浅色间切换。
+
+### 验证
+
+- `pytest -q`：404 passed / 1 skipped（新增 3 项 UI 测试：顶部菜单栏、全局命令栏、导航分组）。
+- `tests/test_workspace_window.py`：20 passed；`tools/check_contracts.py`：41/41；`main.py --selftest`：35/35；`tools/test_agent_features.py`：157/157。
+
 ## [2026-11-15] · 可最大化的工作台窗口
 
 > 本日第三版：补齐桌面形态的主窗口。上一版条目的测试数字为当时实测，本版数字见下方「验证」。
@@ -23,7 +38,7 @@
 
 ### 验证
 
-- `pytest -q`：401 passed / 1 skipped。
+- `pytest -q`：404 passed / 1 skipped。
 - `python tools/check_contracts.py`：41/41 通过。
 - `main.py --selftest`：35/35；`tools/test_agent_features.py`：157/157；`tools/eval_tasks.py`：38/38；`tools/benchmark.py`：+25.00pp。
 

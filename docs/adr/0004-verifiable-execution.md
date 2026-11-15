@@ -70,7 +70,7 @@ python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html
 
 - `python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html`：按轮查看事件、哈希链与失败高亮；
 - `python tools/check_contracts.py`：41 项契约检查（含「30 个动作的副作用契约完备」「轨迹/偏好/进化/计划图模块可用」「主链路接入 token」「三份文档的 pytest 数字一致」），实测 41/41 通过；
-- `pytest -q`：401 passed / 1 skipped，其中 `tests/test_adaptive_integration.py` 覆盖端到端接线 8 项；
+- `pytest -q`：404 passed / 1 skipped，其中 `tests/test_adaptive_integration.py` 覆盖端到端接线 8 项；
 - `python tools/benchmark.py`：学习前后对照，见 [ADR 0003](0003-preference-and-evolution.md)；
 - `python main.py --selftest`：启动冒烟 35/35 通过。
 

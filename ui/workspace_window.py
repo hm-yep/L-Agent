@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""凌零 · 工作台：可点开、可最大化、可记住尺寸的标准主窗口。
+"""凌零 · 工作台：对标 WorkBuddy 深色风格的标准主窗口。
 
 桌宠本体是 185px 的无边框角色，适合常驻桌面；但它不适合读长回复、
-看偏好/规则/轨迹表、翻交付清单。这里补一个真正的 QMainWindow：
+看偏好/规则/轨迹表、翻交付清单。这里补一个真正的 QMainWindow，
+外观对标 WorkBuddy：顶部菜单栏 + 左侧品牌导航边栏（含版本、分组、
+底部更新区）+ 主区顶部标题栏（右侧图标）+ 主区底部全局命令栏。
 
   * 标准窗口边框 + 系统最小化/最大化/关闭按钮，双击标题栏也能最大化；
   * 显眼的「⛶ 最大化 / 还原」按钮，首次打开默认最大化；
-  * 记住窗口尺寸、最大化状态、深浅色主题；
+  * 记住窗口尺寸、最大化状态、深浅色主题（默认深色，贴近截图风格）；
   * 关闭只隐藏窗口、不退出程序（托盘常驻），下次点开立刻回来；
   * 左侧导航六个页面，数据全部来自 Framework 的真实 Store，不放假数据。
 
@@ -28,14 +30,17 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QTextCursor
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QPushButton, QStackedWidget, QStatusBar, QTableWidget,
-    QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QButtonGroup, QComboBox, QFrame,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMenuBar, QPushButton, QStackedWidget,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QWidget,
 )
 
 from framework import config
 from framework.utils import app_data_dir, logger
+
+VERSION = "v1.0.0"
 
 # ------------------------------------------------------------
 # 主题：用占位符替换生成 QSS，避免 f-string 把 QSS 的花括号当占位符
@@ -48,29 +53,74 @@ _LIGHT = dict(
     BUBBLE_ME="#1B6B9A", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#EDF3F8",
 )
 _DARK = dict(
-    BG="#141A21", CARD="#1C2530", BORDER="#2C3A48", TEXT="#E8EEF4",
-    MUTED="#9AAEC0", NAV="#0C141C", NAV_TEXT="#D7E3EE",
-    NAV_ACTIVE="#1D9E75", ACCENT="#378ADD", ACCENT_SOFT="#1B3247",
-    GOOD="#5DCAA5", BAD="#F09595", ROW_ALT="#202A36", INPUT="#161E27",
-    BUBBLE_ME="#1D9E75", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#263242",
+    BG="#0E141B", CARD="#161F29", BORDER="#27323E", TEXT="#E8EEF4",
+    MUTED="#94A7B8", NAV="#0A0F15", NAV_TEXT="#D7E3EE",
+    NAV_ACTIVE="#1D9E75", ACCENT="#3B82F6", ACCENT_SOFT="#1B3247",
+    GOOD="#5DCAA5", BAD="#F09595", ROW_ALT="#1B2530", INPUT="#0F1620",
+    BUBBLE_ME="#1D9E75", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#22303E",
 )
 
 _QSS_TEMPLATE = """
 QMainWindow, QWidget#central { background: __BG__; }
+QMenuBar { background: __CARD__; color: __TEXT__; border-bottom: 1px solid __BORDER__; }
+QMenuBar::item { padding: 5px 12px; border-radius: 6px; }
+QMenuBar::item:selected { background: __ACCENT_SOFT__; }
+QMenu { background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__; }
+QMenu::item { padding: 7px 22px 7px 14px; }
+QMenu::item:selected { background: __ACCENT__; color: #FFFFFF; }
 QWidget#navPanel { background: __NAV__; border: none; }
-QLabel#brand { color: __NAV_TEXT__; font-size: 21px; font-weight: 500; padding: 4px 2px; }
-QLabel#brandSub { color: __MUTED__; font-size: 12px; padding-bottom: 10px; }
-QLabel#navStat { color: __NAV_TEXT__; font-size: 12px; line-height: 1.7; }
+QLabel#brand { color: __NAV_TEXT__; font-size: 19px; font-weight: 600; padding: 2px 2px; }
+QLabel#brandSub { color: __MUTED__; font-size: 12px; padding-bottom: 8px; }
+QPushButton#newConv { background: __ACCENT__; color: #FFFFFF; border: none;
+                      border-radius: 8px; padding: 9px 12px; font-size: 13px; }
+QPushButton#newConv:hover { background: __NAV_ACTIVE__; }
 QPushButton#navButton {
     color: __NAV_TEXT__; background: transparent; border: none;
-    border-radius: 8px; padding: 11px 14px; text-align: left;
+    border-radius: 8px; padding: 10px 12px; text-align: left;
     font-size: 14px; font-family: "Microsoft YaHei", sans-serif;
 }
 QPushButton#navButton:hover { background: __ACCENT_SOFT__; }
 QPushButton#navButton:checked { background: __NAV_ACTIVE__; color: #FFFFFF; }
-QWidget#toolBar { background: __CARD__; border-bottom: 1px solid __BORDER__; }
-QLabel#pageTitle { color: __TEXT__; font-size: 17px; font-weight: 500; }
-QLabel#hintLabel { color: __MUTED__; font-size: 12px; }
+QLabel#navGroupTitle { color: __MUTED__; font-size: 11px; padding: 10px 6px 2px; }
+QLabel#navGroupBody { color: __NAV_TEXT__; font-size: 13px; padding: 0 6px; }
+QWidget#navFoot { background: __NAV__; border: none; }
+QPushButton#navFootBtn {
+    color: __NAV_TEXT__; background: __ACCENT_SOFT__; border: none;
+    border-radius: 8px; padding: 8px; font-size: 15px;
+}
+QPushButton#navFootBtn:hover { background: __NAV_ACTIVE__; color: #FFFFFF; }
+QPushButton#updateBtn {
+    background: transparent; color: __ACCENT__; border: 1px solid __BORDER__;
+    border-radius: 7px; padding: 6px 10px; font-size: 12px;
+}
+QPushButton#updateBtn:hover { background: __ACCENT_SOFT__; }
+QWidget#topBar { background: __CARD__; border-bottom: 1px solid __BORDER__; }
+QLabel#pageTitle { color: __TEXT__; font-size: 17px; font-weight: 600; }
+QPushButton#topIcon { background: transparent; color: __TEXT__; border: none;
+                       border-radius: 8px; padding: 7px 11px; font-size: 14px; }
+QPushButton#topIcon:hover { background: __ACCENT_SOFT__; }
+QWidget#pageCard { background: __CARD__; border: 1px solid __BORDER__;
+                   border-radius: 12px; }
+QTextBrowser#chatView, QTextBrowser#detailView {
+    background: __BG__; color: __TEXT__; border: 1px solid __BORDER__;
+    border-radius: 9px; font-size: 14px; padding: 8px;
+    font-family: "Microsoft YaHei", sans-serif;
+}
+QLineEdit#commandInput {
+    background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
+    border-radius: 10px; padding: 11px 14px; font-size: 14px;
+}
+QLineEdit#commandInput:focus { border: 1.5px solid __ACCENT__; }
+QComboBox#cmdCombo {
+    background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
+    border-radius: 8px; padding: 6px 8px; font-size: 13px;
+}
+QComboBox#cmdCombo QAbstractItemView { background: __CARD__; color: __TEXT__; }
+QPushButton#sendBtn {
+    background: __ACCENT__; color: #FFFFFF; border: none;
+    border-radius: 10px; padding: 10px 18px; font-size: 14px; font-weight: 600;
+}
+QPushButton#sendBtn:hover { background: __NAV_ACTIVE__; }
 QPushButton#primaryButton {
     background: __ACCENT__; color: #FFFFFF; border: none;
     border-radius: 7px; padding: 8px 16px; font-size: 13px;
@@ -81,18 +131,6 @@ QPushButton#ghostButton {
     border-radius: 7px; padding: 7px 14px; font-size: 13px;
 }
 QPushButton#ghostButton:hover { background: __ACCENT_SOFT__; }
-QWidget#pageCard { background: __CARD__; border: 1px solid __BORDER__;
-                   border-radius: 12px; }
-QTextBrowser#chatView, QTextBrowser#detailView {
-    background: __BG__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; font-size: 14px; padding: 8px;
-    font-family: "Microsoft YaHei", sans-serif;
-}
-QLineEdit#chatInput {
-    background: __INPUT__; color: __TEXT__; border: 1px solid __BORDER__;
-    border-radius: 9px; padding: 10px 14px; font-size: 14px;
-}
-QLineEdit#chatInput:focus { border: 1.5px solid __ACCENT__; }
 QTableWidget#dataTable {
     background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
     border-radius: 9px; gridline-color: __BORDER__; font-size: 13px;
@@ -127,6 +165,9 @@ PAGE_DEFS = [
     ("about", "关于与设置", "窗口操作、开关状态与快捷入口"),
 ]
 
+# 导航项图标（无图标资源，用字符替代）
+_PAGE_ICONS = ["💬", "⭐", "🧠", "🛰", "📦", "⚙"]
+
 
 def _cell(text) -> QTableWidgetItem:
     item = QTableWidgetItem("" if text is None else str(text))
@@ -139,6 +180,8 @@ class WorkspaceWindow(QMainWindow):
 
     workspace_closed = pyqtSignal()
     settings_requested = pyqtSignal()
+    quit_requested = pyqtSignal()
+    context_requested = pyqtSignal()
 
     def __init__(self, fw, parent=None, settings_path: str = None):
         super().__init__(parent)
@@ -152,13 +195,14 @@ class WorkspaceWindow(QMainWindow):
         self._settings = QSettings(
             settings_path or os.path.join(app_data_dir(), "workspace.ini"),
             QSettings.IniFormat)
-        self._theme = self._settings.value("theme", "light")
+        self._theme = self._settings.value("theme", "dark")
         if self._theme not in ("light", "dark"):
-            self._theme = "light"
+            self._theme = "dark"
         self._max_state = False
         self._first_open = True
         self._timeline_path = os.path.join(app_data_dir(), "timeline.html")
 
+        self._build_menu()
         self._build_ui()
         self._connect_framework()
         self._restore_state()
@@ -169,6 +213,56 @@ class WorkspaceWindow(QMainWindow):
         self._status_timer.setInterval(4000)
         self._status_timer.timeout.connect(self._refresh_status)
         self._status_timer.start()
+
+    # ------------------------------------------------------------
+    # 顶部菜单栏（对标 WorkBuddy 的 文件/编辑/窗口/帮助/关于）
+    # ------------------------------------------------------------
+    def _build_menu(self):
+        bar = self.menuBar()
+        bar.clear()
+
+        file_menu = bar.addMenu("文件(&F)")
+        act = file_menu.addAction("打开工作台")
+        act.triggered.connect(self.open_workspace)
+        act = file_menu.addAction("退出程序")
+        act.triggered.connect(self.quit_requested.emit)
+
+        edit_menu = bar.addMenu("编辑(&E)")
+        act = edit_menu.addAction("切换深色 / 浅色主题")
+        act.triggered.connect(self.toggle_theme)
+        act = edit_menu.addAction("复制当前页状态到剪贴板")
+        act.triggered.connect(self._copy_status)
+
+        win_menu = bar.addMenu("窗口(&W)")
+        act = win_menu.addAction("最大化 / 还原")
+        act.triggered.connect(self.toggle_maximize)
+        act = win_menu.addAction("最小化")
+        act.triggered.connect(self.showMinimized)
+        act = win_menu.addAction("回到桌宠")
+        act.triggered.connect(self.hide_to_pet)
+
+        help_menu = bar.addMenu("帮助(&H)")
+        act = help_menu.addAction("打开使用文档")
+        act.triggered.connect(self._open_docs)
+
+        about_menu = bar.addMenu("关于(&A)")
+        act = about_menu.addAction("凌零 · 关于与设置")
+        act.triggered.connect(lambda: self.switch_page(5))
+
+    def _copy_status(self):
+        try:
+            QApplication.clipboard().setText(self._status_label.text())
+        except Exception:      # noqa: BLE001 剪贴板不可用不致命
+            pass
+
+    def _open_docs(self):
+        try:
+            root = Path(__file__).resolve().parents[1]
+            target = root / "docs" / "QUICK_START.md"
+            if target.exists():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f"[Workspace] 打开文档失败: {e}")
 
     # ------------------------------------------------------------
     # 构建界面
@@ -186,7 +280,7 @@ class WorkspaceWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)
-        rv.addWidget(self._build_toolbar())
+        rv.addWidget(self._build_topbar())
 
         self._stack = QStackedWidget()
         self._stack.setObjectName("pageStack")
@@ -204,35 +298,39 @@ class WorkspaceWindow(QMainWindow):
         hv.addWidget(self._stack)
         rv.addWidget(holder, 1)
 
-        self._status = QStatusBar(self)
-        self._status.setObjectName("statusBar")
-        self._status_label = QLabel("就绪")
-        self._status.addWidget(self._status_label)
-        rv.addWidget(self._status)
-
+        rv.addWidget(self._build_command_bar())
+        rv.addWidget(self._build_status())
         root.addWidget(right, 1)
         self.setCentralWidget(central)
 
+    # ---------------- 左侧导航边栏（对标 WorkBuddy） ----------------
     def _build_nav(self) -> QWidget:
         nav = QWidget()
         nav.setObjectName("navPanel")
-        nav.setFixedWidth(210)
+        nav.setFixedWidth(236)
         v = QVBoxLayout(nav)
-        v.setContentsMargins(18, 22, 14, 18)
-        v.setSpacing(4)
+        v.setContentsMargins(16, 18, 14, 14)
+        v.setSpacing(6)
 
         brand = QLabel("凌零 · 工作台")
         brand.setObjectName("brand")
-        sub = QLabel("桌面 AI 数字员工")
+        sub = QLabel("桌面 AI 数字员工  %s" % VERSION)
         sub.setObjectName("brandSub")
         v.addWidget(brand)
         v.addWidget(sub)
+
+        new_conv = QPushButton("＋ 新建对话")
+        new_conv.setObjectName("newConv")
+        new_conv.setCursor(Qt.PointingHandCursor)
+        new_conv.clicked.connect(self._new_conversation)
+        v.addWidget(new_conv)
+        v.addSpacing(4)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
         self._nav_buttons = []
         for i, (_key, title, _hint) in enumerate(PAGE_DEFS):
-            btn = QPushButton(title)
+            btn = QPushButton("%s  %s" % (_PAGE_ICONS[i], title))
             btn.setObjectName("navButton")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
@@ -240,37 +338,153 @@ class WorkspaceWindow(QMainWindow):
             group.addButton(btn)
             v.addWidget(btn)
             self._nav_buttons.append(btn)
+        v.addSpacing(6)
+
+        # 分组区：任务 / 交付（动态计数）
+        self._nav_groups = QLabel("")
+        self._nav_groups.setObjectName("navGroupBody")
+        self._nav_groups.setWordWrap(True)
+        v.addWidget(self._nav_groups)
         v.addStretch(1)
 
-        self._nav_stat = QLabel("")
-        self._nav_stat.setObjectName("navStat")
-        self._nav_stat.setWordWrap(True)
-        v.addWidget(self._nav_stat)
+        v.addWidget(self._build_nav_foot())
         return nav
 
-    def _build_toolbar(self) -> QWidget:
+    def _build_nav_foot(self) -> QWidget:
+        foot = QWidget()
+        foot.setObjectName("navFoot")
+        v = QVBoxLayout(foot)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(8)
+
+        top = QWidget()
+        th = QHBoxLayout(top)
+        th.setContentsMargins(0, 0, 0, 0)
+        th.setSpacing(8)
+        self._theme_btn = self._foot_btn("◐", self.toggle_theme, "切换深色/浅色")
+        self._maximize_btn = self._foot_btn("⛶", self.toggle_maximize,
+                                           "最大化/还原")
+        self._foot_pet = self._foot_btn("←", self.hide_to_pet, "回到桌宠")
+        th.addWidget(self._theme_btn)
+        th.addWidget(self._maximize_btn)
+        th.addWidget(self._foot_pet)
+        v.addWidget(top)
+
+        update = QWidget()
+        uh = QHBoxLayout(update)
+        uh.setContentsMargins(0, 0, 0, 0)
+        uh.setSpacing(8)
+        note = QLabel("凌零 %s · 开源" % VERSION)
+        note.setObjectName("navGroupTitle")
+        uh.addWidget(note)
+        upd_btn = QPushButton("检查更新")
+        upd_btn.setObjectName("updateBtn")
+        upd_btn.setCursor(Qt.PointingHandCursor)
+        upd_btn.setToolTip("本项目开源，没有在线更新通道；拉取最新代码即可")
+        uh.addWidget(upd_btn)
+        v.addWidget(update)
+        return foot
+
+    def _foot_btn(self, text, slot, tip) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("navFootBtn")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(tip)
+        btn.clicked.connect(slot)
+        return btn
+
+    # ---------------- 主区顶部标题栏（对标 WorkBuddy） ----------------
+    def _build_topbar(self) -> QWidget:
         bar = QWidget()
-        bar.setObjectName("toolBar")
-        bar.setFixedHeight(62)
+        bar.setObjectName("topBar")
+        bar.setFixedHeight(56)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(20, 10, 18, 10)
-        h.setSpacing(10)
+        h.setContentsMargins(20, 8, 16, 8)
+        h.setSpacing(8)
 
         self._title = QLabel("对话")
         self._title.setObjectName("pageTitle")
         h.addWidget(self._title)
         h.addStretch(1)
 
-        self._theme_btn = self._ghost("◐ 深色", self.toggle_theme)
-        h.addWidget(self._theme_btn)
-        h.addWidget(self._ghost("⟳ 刷新", self.refresh_current))
-        self._maximize_btn = QPushButton("⛶ 最大化")
-        self._maximize_btn.setObjectName("primaryButton")
-        self._maximize_btn.setCursor(Qt.PointingHandCursor)
-        self._maximize_btn.clicked.connect(self.toggle_maximize)
-        h.addWidget(self._maximize_btn)
-        h.addWidget(self._ghost("← 回到桌宠", self.hide_to_pet))
+        for icon, tip, slot in (
+            ("🔍", "聚焦命令栏", self._focus_command),
+            ("⟳", "刷新当前页", self.refresh_current),
+            ("🔔", "查看执行状态", lambda: self.switch_page(3)),
+            ("⛶", "最大化 / 还原", self.toggle_maximize),
+        ):
+            btn = QPushButton(icon)
+            btn.setObjectName("topIcon")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            h.addWidget(btn)
         return bar
+
+    # ---------------- 主区底部全局命令栏（对标 WorkBuddy） ----------------
+    def _build_command_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("commandBar")
+        bar.setFixedHeight(66)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(18, 10, 18, 10)
+        h.setSpacing(8)
+
+        plus = QPushButton("＋")
+        plus.setObjectName("topIcon")
+        plus.setCursor(Qt.PointingHandCursor)
+        plus.setToolTip("添加上下文（@ 引用桌面文件 / 资料）")
+        plus.clicked.connect(self._add_context)
+        h.addWidget(plus)
+
+        self._chat_input = QLineEdit()
+        self._chat_input.setObjectName("commandInput")
+        self._chat_input.setPlaceholderText(
+            "今天帮你做些什么？  @ 添加上下文，/ 调用技能与指令")
+        self._chat_input.returnPressed.connect(self._send)
+        h.addWidget(self._chat_input, 1)
+
+        branch = QComboBox()
+        branch.setObjectName("cmdCombo")
+        branch.addItems(["P main"])
+        branch.setToolTip("当前分支（本项目单分支）")
+        branch.setFixedWidth(86)
+        h.addWidget(branch)
+
+        access = QComboBox()
+        access.setObjectName("cmdCombo")
+        access.addItems(["允许完全访问", "受限模式"])
+        access.setToolTip("访问级别（界面展示，由本机权限决定）")
+        access.setFixedWidth(110)
+        h.addWidget(access)
+
+        lang = QPushButton("中")
+        lang.setObjectName("topIcon")
+        lang.setCursor(Qt.PointingHandCursor)
+        lang.setToolTip("界面语言：中文")
+        lang.setFixedWidth(40)
+        h.addWidget(lang)
+
+        model = QComboBox()
+        model.setObjectName("cmdCombo")
+        model.addItems(["Hy4", "GLM-4.6V", "离线规则"])
+        model.setToolTip("展示当前可用模型；实际模型由设置 / API Key 决定")
+        model.setFixedWidth(96)
+        h.addWidget(model)
+
+        send = QPushButton("发送 ▲")
+        send.setObjectName("sendBtn")
+        send.setCursor(Qt.PointingHandCursor)
+        send.clicked.connect(self._send)
+        h.addWidget(send)
+        return bar
+
+    def _build_status(self) -> QStatusBar:
+        self._status = QStatusBar(self)
+        self._status.setObjectName("statusBar")
+        self._status_label = QLabel("就绪")
+        self._status.addWidget(self._status_label)
+        return self._status
 
     def _ghost(self, text, slot) -> QPushButton:
         btn = QPushButton(text)
@@ -320,23 +534,6 @@ class WorkspaceWindow(QMainWindow):
         self._chat_view.setObjectName("chatView")
         self._chat_view.setOpenExternalLinks(False)
         v.addWidget(self._chat_view, 1)
-
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(8)
-        self._chat_input = QLineEdit()
-        self._chat_input.setObjectName("chatInput")
-        self._chat_input.setPlaceholderText("想让我做什么？回车发送")
-        self._chat_input.returnPressed.connect(self._send)
-        h.addWidget(self._chat_input, 1)
-        send = QPushButton("发送")
-        send.setObjectName("primaryButton")
-        send.clicked.connect(self._send)
-        h.addWidget(send)
-        h.addWidget(self._ghost("撤销", lambda: self._quick("撤销")))
-        h.addWidget(self._ghost("技能列表", lambda: self._quick("技能列表")))
-        v.addWidget(row)
         return page, self._refresh_chat
 
     def _send(self):
@@ -345,18 +542,33 @@ class WorkspaceWindow(QMainWindow):
             return
         self._chat_input.clear()
         self.fw.send_command(text)
+        self.switch_page(0)
         self._refresh_chat()
 
     def _quick(self, text):
         self.fw.send_command(text)
         self._refresh_chat()
 
+    def _new_conversation(self):
+        self.switch_page(0)
+        self._focus_command()
+
+    def _focus_command(self):
+        self._chat_input.setFocus()
+        self._chat_input.setText("@ ")
+
+    def _add_context(self):
+        self._chat_input.setFocus()
+        cur = self._chat_input.text()
+        if "@" not in cur:
+            self._chat_input.setText((cur + " @ ").strip())
+
     def _refresh_chat(self):
         history = list(getattr(self.fw.memory, "history", []) or [])[-60:]
         if not history:
             self._chat_view.setHtml(
                 '<div style="color:#8899aa;padding:24px;text-align:center;">'
-                '还没有对话。在上面输入一句话，或点桌宠直接说。</div>')
+                '还没有对话。在底部命令栏输入一句话，或点桌宠直接说。</div>')
             return
         p = _LIGHT if self._theme == "light" else _DARK
         parts = []
@@ -593,19 +805,24 @@ class WorkspaceWindow(QMainWindow):
             "<li>%s：%s</li>" % (html.escape(k), "开启" if v else "关闭")
             for k, v in switches)
         self._about_view.setHtml(
-            "<h2>凌零 · 桌面 AI 数字员工</h2>"
-            "<p>这个窗口是标准主窗口：可以拖动边框调整大小、双击标题栏最大化、"
+            "<h2>凌零 · 桌面 AI 数字员工 %s</h2>"
+            "<p>这个窗口对标 WorkBuddy 的深色主窗口：顶部菜单栏、左侧品牌导航、"
+            "主区顶部标题栏与底部全局命令栏。可以拖动边框调整大小、双击标题栏最大化、"
             "点右上角或这里的「⛶ 最大化」按钮铺满屏幕。关闭只会隐藏窗口，"
             "桌宠与托盘继续常驻；从桌宠右键菜单、托盘菜单或输入条的「工作台」"
             "按钮都能再打开。</p>"
             "<h3>窗口操作</h3><ul>"
             "<li>⛶ 最大化 / 还原：切换铺满与窗口模式（状态会被记住）</li>"
-            "<li>◐ 深色 / 浅色：切换主题（会被记住）</li>"
+            "<li>◐ 深色 / 浅色：切换主题（会被记住，默认深色）</li>"
             "<li>← 回到桌宠：隐藏窗口，回到桌面角色</li>"
             "<li>Esc：关闭窗口（不退出程序）</li></ul>"
+            "<h3>底部命令栏</h3><ul>"
+            "<li>＋ 添加上下文、@ 引用桌面文件、/ 调用技能与指令</li>"
+            "<li>回车或「发送 ▲」把指令交给桌宠执行，自动切到对话页查看</li>"
+            "<li>分支 / 访问级别 / 模型为界面展示项，实际行为由本机设置与 Key 决定</li></ul>"
             "<h3>当前开关</h3><ul>%s</ul>"
             "<h3>数据位置</h3><p>轨迹、偏好、规则保存在本机数据目录，"
-            "均不含用户原话明文；可用环境变量 LINGLING_DATA_DIR 隔离。</p>" % rows)
+            "均不含用户原话明文；可用环境变量 LINGLING_DATA_DIR 隔离。</p>" % (VERSION, rows))
 
     # ------------------------------------------------------------
     # 交互与状态
@@ -656,6 +873,8 @@ class WorkspaceWindow(QMainWindow):
         n_prefs = len(prefs.all()) if prefs is not None else 0
         n_rules = len([r for r in rules.all() if r.get("enabled")]) \
             if rules is not None else 0
+        n_todos = len(getattr(getattr(self.fw, "tasks", None), "todos", []) or [])
+        n_deliv = len(getattr(getattr(self.fw, "tasks", None), "deliveries", []) or [])
         self._status_label.setText(
             "轮次 %d  ·  事件 %d  ·  失败率 %.1f%%  ·  token %d  ·  "
             "偏好 %d  ·  生效规则 %d  ·  哈希链 %s  ·  %s"
@@ -663,11 +882,9 @@ class WorkspaceWindow(QMainWindow):
                n_prefs, n_rules, "完整" if s["chain_ok"] else "断开",
                self.fw.ai_status_text()
                if hasattr(self.fw, "ai_status_text") else ""))
-        self._nav_stat.setText(
-            "AI：%s\n偏好：%d 条\n生效规则：%d 条\n轨迹：%d 轮"
-            % (self.fw.ai_status_text()
-               if hasattr(self.fw, "ai_status_text") else "-",
-               n_prefs, n_rules, s["turns"]))
+        self._nav_groups.setText(
+            "任务：待办 %d 项\n交付：已生成 %d 份\n偏好：%d 条 · 生效规则：%d 条"
+            % (n_todos, n_deliv, n_prefs, n_rules))
 
     def toggle_theme(self):
         self._apply_theme("dark" if self._theme == "light" else "light")
@@ -676,9 +893,9 @@ class WorkspaceWindow(QMainWindow):
         self.save_state()
 
     def _apply_theme(self, theme: str):
-        self._theme = theme if theme in ("light", "dark") else "light"
+        self._theme = theme if theme in ("light", "dark") else "dark"
         self.setStyleSheet(_qss(_DARK if self._theme == "dark" else _LIGHT))
-        self._theme_btn.setText("☀ 浅色" if self._theme == "dark" else "◐ 深色")
+        self._theme_btn.setText("☀" if self._theme == "dark" else "◐")
 
     def _apply_maximize(self, on: bool):
         self._max_state = bool(on)

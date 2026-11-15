@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtGui import QCloseEvent  # noqa: E402
-from PyQt5.QtWidgets import QApplication, QMainWindow  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QLineEdit, QMainWindow  # noqa: E402
 
 from framework.core import Framework  # noqa: E402
 from ui.workspace_window import PAGE_DEFS, WorkspaceWindow  # noqa: E402
@@ -166,18 +166,53 @@ def test_delivery_page_shows_real_files(fw_and_window, tmp_path):
 
 def test_theme_toggle_changes_stylesheet_and_is_remembered(fw_and_window):
     fw, w, path = fw_and_window
+    init_theme = w._theme
     light = w.styleSheet()
     w.toggle_theme()
-    assert w._theme == "dark"
-    assert w.styleSheet() != light
-    assert "浅色" in w._theme_btn.text()
+    assert w._theme != init_theme          # 主题真的翻转了
+    assert w.styleSheet() != light         # 样式表真的变了
+    assert w._theme_btn.text() in ("☀", "◐")
 
     w2 = WorkspaceWindow(fw, settings_path=path)
     try:
-        assert w2._theme == "dark"
+        assert w2._theme == w._theme       # 记住了上一次切换后的主题
     finally:
         w2.detach()
         w2.hide()
+
+
+def test_top_menu_bar_exists(fw_and_window):
+    """对标 WorkBuddy：顶部有 文件/编辑/窗口/帮助/关于 菜单栏。"""
+    _fw, w, _path = fw_and_window
+    bar = w.menuBar()
+    joined = "".join(a.text() for a in bar.actions())
+    for name in ("文件", "编辑", "窗口", "帮助", "关于"):
+        assert name in joined
+
+
+def test_global_command_bar_present(fw_and_window):
+    """底部全局命令栏：占位文案、回车/发送把指令交给框架。"""
+    _fw, w, _path = fw_and_window
+    assert isinstance(w._chat_input, QLineEdit)
+    assert "今天帮你做些什么" in w._chat_input.placeholderText()
+    seen = []
+    w.fw.send_command = lambda t: seen.append(t)
+    w._chat_input.setText("加个待办：交周报")
+    w._send()
+    assert seen == ["加个待办：交周报"]
+    assert w._chat_input.text() == ""
+
+
+def test_nav_groups_reflect_live_counts(fw_and_window):
+    """左侧导航分组随真实数据刷新（任务 / 交付 / 偏好 / 规则）。"""
+    fw, w, _path = fw_and_window
+    fw.tasks.add_delivery("报告.pptx", __file__, "ppt")
+    fw.prefs.observe("我喜欢深色 PPT")
+    w._refresh_status()
+    body = w._nav_groups.text()
+    assert "待办" in body and "交付" in body
+    assert "1 份" in body or "1份" in body
+    assert "偏好" in body
 
 
 def test_geometry_and_maximize_state_are_saved(fw_and_window):
