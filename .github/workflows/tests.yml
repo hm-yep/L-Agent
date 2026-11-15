@@ -61,3 +61,18 @@ jobs:
         # 防止未来改动悄悄把「进化」能力改坏（这是回归阈值，不是摆设）。
         run: |
           python tools/benchmark.py --threshold 0.8 --min-delta 10 --json docs/eval/benchmark.json --md docs/eval/benchmark.md --append-history
+
+      - name: Upload eval artifacts (history + reports)
+        # runner 是一次性的：若不把 history.jsonl 上传，趋势跟踪的数据
+        # 随 runner 销毁就没了。这里把历史与报告一起存成 workflow artifact，
+        # 供按需下载做长期趋势对比（本地 Git 提交一份种子历史做基线）。
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-artifacts
+          path: |
+            docs/eval/history.jsonl
+            docs/eval/benchmark.json
+            docs/eval/benchmark.md
+            docs/eval/capability.json
+            docs/eval/capability.md
+          if-no-files-found: error

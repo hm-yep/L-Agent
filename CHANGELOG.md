@@ -2,6 +2,21 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 趋势跟踪真正落盘（修 history 路径 + CI 上传 artifact）
+
+> 上轮「趋势跟踪」其实写了个寂寞：`--append-history` 写进 `docs/benchmark/history.jsonl`，但 CI 既没上传 artifact 也没 commit 回去，runner 一销毁历史就没了；且该目录本地不存在、也没进 git，路径还与其余报告的 `docs/eval/` 不一致。本轮修掉。
+
+### 变更
+
+- `tools/benchmark.py`：`HISTORY_PATH` 从 `docs/benchmark/history.jsonl` 统一改为 `docs/eval/history.jsonl`（与 benchmark.md / capability.md 同目录），同步更新 docstring 与 `--append-history` 帮助文本。
+- `.github/workflows/tests.yml`：新增 `Upload eval artifacts` 步骤（`actions/upload-artifact@v4`），把 `history.jsonl` 及两套报告一并上传为 `eval-artifacts`，避免数据随一次性 runner 销毁。
+- `docs/eval/README.md`：「趋势」一节更新路径与落盘机制说明（仓库提交种子历史作基线，趋势 = 基线 + 历次 artifact）。
+- `tools/check_contracts.py`：新增 2 条契约（趋势历史路径统一到 `docs/eval/` / CI 上传 artifact 保住趋势历史），契约总数 47 → 49。
+
+### 验证
+
+- 实测 `--append-history` 落盘到 `docs/eval/history.jsonl`、退出码 0；pytest `test_benchmark.py` 11 passed；契约 49/49 全绿。
+
 ## [2026-11-15] · 评测深度落盘 + 进 CI 卡口（把 +25pp 变成看得见的东西）
 
 > 本轮盘面重审发现：评测层真实存在且口径认真（扰动 + 学习前后对照），但「零落盘产物」——跑完只出 stdout，README/CI/简历三处都看不到那个最硬的数字。本次把深度落到盘上并收进 CI 回归卡口。

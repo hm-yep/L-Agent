@@ -59,7 +59,7 @@ requests 栈）；被测函数都是纯本地链路，绝不触发 web_search/re
     PYTHONIOENCODING=utf-8 QT_QPA_PLATFORM=offscreen python tools/benchmark.py
 可选参数：
     --json <path>        写机器可读结果（含前后两组明细、救回 id、分类计数）
-    --append-history     追加一行到 docs/benchmark/history.jsonl（目录不存在则建）
+    --append-history     追加一行到 docs/eval/history.jsonl（目录不存在则建）
     --threshold <float>  学习后完成率阈值，默认 0.8
     --seed <int>         随机种子，默认 42
 退出码：0 = 学习后完成率 >= 阈值 且 有正提升 且 救回数 >= 4；1 = 否则。
@@ -139,7 +139,7 @@ MIN_RESCUED = 4
 # 学习后完成率必须比学习前高出至少这个百分点，否则判「进化失效」。
 # 当前实测提升 25.00pp，留出裕量设 10pp，防未来改动悄悄把进化能力改坏。
 MIN_DELTA_PP = 10.0
-HISTORY_PATH = os.path.join(_ROOT, "docs", "benchmark", "history.jsonl")
+HISTORY_PATH = os.path.join(_ROOT, "docs", "eval", "history.jsonl")
 
 ALL_FAILURE_CATEGORIES = (
     "quality_reject", "bad_path", "invalid_action", "timeout",
@@ -824,7 +824,7 @@ def _write_markdown(path, cmp):
 
 
 def _append_history(cmp, seed):
-    """追加一行到 docs/benchmark/history.jsonl（目录不存在则创建）。"""
+    """追加一行到 docs/eval/history.jsonl（目录不存在则创建）。"""
     row = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "seed": seed,
@@ -863,7 +863,7 @@ def main(argv=None):
     p.add_argument("--md", dest="md_path", default=None,
                    help="把结果写成 markdown 报告（供 README / 简历引用）")
     p.add_argument("--append-history", action="store_true",
-                   help="追加一行到 docs/benchmark/history.jsonl")
+                   help="追加一行到 docs/eval/history.jsonl")
     p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                    help="学习后完成率阈值，默认 0.8")
     p.add_argument("--min-delta", type=float, default=MIN_DELTA_PP,

@@ -176,6 +176,12 @@ def main() -> int:
           "docs/eval/benchmark.md" in ci_src
           and "docs/eval/capability.md" in ci_src
           and "--min-delta" in ci_src)
+    check("趋势历史路径统一到 docs/eval/",
+          "docs/eval/history.jsonl" in bench_src
+          and "docs/benchmark/history.jsonl" not in bench_src)
+    check("CI 上传评测 artifact 保住趋势历史",
+          "actions/upload-artifact" in ci_src
+          and "docs/eval/history.jsonl" in ci_src)
     trace_src = (ROOT / "tools" / "trace_view.py").read_text(encoding="utf-8")
     check("时间线渲染对撤销账本脱敏",
           "undo_ledger" in trace_src and "html.escape" in trace_src)

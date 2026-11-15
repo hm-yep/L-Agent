@@ -23,4 +23,4 @@
 
 ## 趋势
 
-`tools/benchmark.py --append-history` 会把每次运行的学习前/后完成率追加到 `docs/benchmark/history.jsonl`，用于长期趋势跟踪（防止某次改动悄悄把进化能力改坏，`--min-delta` 就是这道卡口）。
+`tools/benchmark.py --append-history` 会把每次运行的学习前/后完成率追加到 `docs/eval/history.jsonl`（与本目录其余报告同路径），用于长期趋势跟踪（防止某次改动悄悄把进化能力改坏，`--min-delta` 就是这道卡口）。CI 每轮把该文件连同各报告一起作为 workflow artifact 上传（`eval-artifacts`），因为 runner 是一次性的、不落盘历史就会随其销毁；仓库内提交一份种子历史作基线，趋势对比 = 种子基线 + 历次 artifact。
