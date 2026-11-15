@@ -188,7 +188,8 @@ def main() -> int:
     inp_src = (ROOT / "ui" / "input_dialog.py").read_text(encoding="utf-8")
     tray_src = (ROOT / "ui" / "ui_manager.py").read_text(encoding="utf-8")
     check("输入条与托盘都有工作台入口",
-          "⛶ 工作台" in inp_src and "打开工作台" in tray_src)
+          "_workspace_btn" in inp_src and '"  工作台"' in inp_src
+          and "打开工作台" in tray_src)
     check("截图时工作台一并隐藏", "_workspace_was_visible" in pet_src)
 
     print("=== 文档口径 ===")

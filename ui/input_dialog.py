@@ -156,8 +156,15 @@ class InputDialog(QWidget):
         self._send_btn.clicked.connect(self._on_submit)
         row.addWidget(self._send_btn)
 
-        # 「工作台」按钮：从紧凑输入条一键展开可最大化的主窗口
-        self._workspace_btn = QPushButton("⛶ 工作台", self._panel)
+        # 「工作台」按钮：从紧凑输入条一键展开可最大化的主窗口（矢量图标）
+        self._workspace_btn = QPushButton("  工作台", self._panel)
+        try:
+            from .icons import icon as _icon
+            from PyQt5.QtCore import QSize as _QSize
+            self._workspace_btn.setIcon(_icon("maximize", "#D9A066", 15))
+            self._workspace_btn.setIconSize(_QSize(15, 15))
+        except Exception:      # noqa: BLE001 图标失败不影响按钮功能
+            pass
         self._workspace_btn.setObjectName("barButton")
         self._workspace_btn.setCursor(Qt.PointingHandCursor)
         self._workspace_btn.setFocusPolicy(Qt.NoFocus)  # 不抢焦点，避免输入条失焦自关
@@ -262,7 +269,7 @@ class HistoryPanel(QWidget):
 
         # ---- 标题行 ----
         head = QHBoxLayout()
-        title = QLabel("💬 聊天记录")
+        title = QLabel("聊天记录")
         title.setObjectName("historyTitle")
         head.addWidget(title)
         head.addStretch()

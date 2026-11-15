@@ -171,7 +171,9 @@ def test_theme_toggle_changes_stylesheet_and_is_remembered(fw_and_window):
     w.toggle_theme()
     assert w._theme != init_theme          # 主题真的翻转了
     assert w.styleSheet() != light         # 样式表真的变了
-    assert w._theme_btn.text() in ("☀", "◐")
+    assert not w._theme_btn.icon().isNull()  # 主题按钮用矢量图标，不是字符
+    assert w._icon_buttons[w._theme_btn][0] == (
+        "sun" if w._theme == "light" else "moon")
 
     w2 = WorkspaceWindow(fw, settings_path=path)
     try:
@@ -263,7 +265,7 @@ def test_three_entry_points_are_wired():
     assert "open_workspace" in pet
     assert pet.count("workspace_requested.connect") >= 2
     inp = Path("ui/input_dialog.py").read_text(encoding="utf-8")
-    assert "⛶ 工作台" in inp
+    assert "工作台" in inp
     tray = Path("ui/ui_manager.py").read_text(encoding="utf-8")
     assert "打开工作台" in tray
 

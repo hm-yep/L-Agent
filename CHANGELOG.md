@@ -2,6 +2,22 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 界面图标改为矢量线框
+
+> 本日第五版：按「廉价图标不如没有」的反馈，把界面里靠系统 emoji 字符充当图标的地方全部替换掉。
+
+### 变更
+
+- 新增 `ui/icons.py`：程序化绘制的 Feather 风格 24×24 矢量线框图标集，`QSvgRenderer` + 2× 超采样渲染，随主题着色并按 (名称, 颜色, 尺寸) 缓存；不依赖系统 emoji 字体。
+- `ui/workspace_window.py`：左侧导航（对话 / 偏好 / 规则 / 轨迹 / 交付 / 关于）、新建对话、标题栏、底部命令栏、各页操作按钮全部改用矢量图标，主题切换时统一重绘；移除 `💬⭐🧠🛰📦⚙⛶◐☀🔍🔔⟳＋▲` 等字符图标。
+- `ui/input_dialog.py` / `ui/pet_window.py` / `ui/ui_manager.py`：工作台入口、右键菜单、设置标题去掉 emoji，改用矢量图标或纯文字（菜单里没有好图标时，纯文字优于廉价图标）。
+- `tests/test_workspace_window.py` / `tools/check_contracts.py`：把原先断言 emoji 字符的检查改成断言矢量图标 / 干净文案，契约总数不变。
+
+### 验证
+
+- `pytest -q`：404 passed / 1 skipped；`tools/check_contracts.py`：41/41；`tools/test_agent_features.py`：157/157。
+- 离屏渲染工作台截图人工核对：图标为统一细线风格，无缺失、无方块乱码、无错位。
+
 ## [2026-11-15] · 工作台界面对标 WorkBuddy 风格
 
 > 本日第四版：把上一版的标准主窗口重做成 WorkBuddy 的深色界面格局，外观与交互更贴近主流桌面 AI 客户端。

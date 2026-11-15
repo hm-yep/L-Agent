@@ -342,7 +342,7 @@ class SettingsDialog(QWidget):
 
         # ---- 标题栏：标题 + 右上角关闭按钮 ----
         title_row = QHBoxLayout()
-        title = QLabel("⚙ 设置")
+        title = QLabel("设置")
         title.setObjectName("settingsTitle")
         title_row.addWidget(title)
         title_row.addStretch()

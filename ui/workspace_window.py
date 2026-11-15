@@ -7,7 +7,7 @@
 底部更新区）+ 主区顶部标题栏（右侧图标）+ 主区底部全局命令栏。
 
   * 标准窗口边框 + 系统最小化/最大化/关闭按钮，双击标题栏也能最大化；
-  * 显眼的「⛶ 最大化 / 还原」按钮，首次打开默认最大化；
+  * 显眼的最大化 / 还原按钮，首次打开默认最大化；
   * 记住窗口尺寸、最大化状态、深浅色主题（默认深色，贴近截图风格）；
   * 关闭只隐藏窗口、不退出程序（托盘常驻），下次点开立刻回来；
   * 左侧导航六个页面，数据全部来自 Framework 的真实 Store，不放假数据。
@@ -27,8 +27,10 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QTextCursor
+
+from .icons import icon
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
@@ -165,14 +167,20 @@ PAGE_DEFS = [
     ("about", "关于与设置", "窗口操作、开关状态与快捷入口"),
 ]
 
-# 导航项图标（无图标资源，用字符替代）
-_PAGE_ICONS = ["💬", "⭐", "🧠", "🛰", "📦", "⚙"]
+# 导航项使用矢量线框图标名（见 ui/icons.py），不再用廉价的系统 emoji 字符
+_PAGE_ICONS = ["chat", "prefs", "rules", "trace", "deliveries", "about"]
 
 
 def _cell(text) -> QTableWidgetItem:
     item = QTableWidgetItem("" if text is None else str(text))
     item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
     return item
+
+
+def _icon_palette(theme: str):
+    """返回该主题下按钮/文字与导航栏图标应使用的颜色。"""
+    p = _DARK if theme == "dark" else _LIGHT
+    return p["TEXT"], p["NAV_TEXT"]
 
 
 class WorkspaceWindow(QMainWindow):
@@ -201,6 +209,8 @@ class WorkspaceWindow(QMainWindow):
         self._max_state = False
         self._first_open = True
         self._timeline_path = os.path.join(app_data_dir(), "timeline.html")
+        # 记录「按钮 -> 图标名」，主题切换时统一重新着色（矢量图标随主题变色）
+        self._icon_buttons = {}
 
         self._build_menu()
         self._build_ui()
@@ -319,22 +329,29 @@ class WorkspaceWindow(QMainWindow):
         v.addWidget(brand)
         v.addWidget(sub)
 
-        new_conv = QPushButton("＋ 新建对话")
+        new_conv = QPushButton("  新建对话")
         new_conv.setObjectName("newConv")
+        new_conv.setIcon(icon("plus", "#FFFFFF", 16))
+        new_conv.setIconSize(QSize(16, 16))
         new_conv.setCursor(Qt.PointingHandCursor)
         new_conv.clicked.connect(self._new_conversation)
+        self._icon_buttons[new_conv] = ("plus", "white")
         v.addWidget(new_conv)
         v.addSpacing(4)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
         self._nav_buttons = []
+        text_color, nav_color = _icon_palette(self._theme)
         for i, (_key, title, _hint) in enumerate(PAGE_DEFS):
-            btn = QPushButton("%s  %s" % (_PAGE_ICONS[i], title))
+            btn = QPushButton("  " + title)
             btn.setObjectName("navButton")
+            btn.setIcon(icon(_PAGE_ICONS[i], nav_color, 18))
+            btn.setIconSize(QSize(18, 18))
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _checked, idx=i: self.switch_page(idx))
+            self._icon_buttons[btn] = (_PAGE_ICONS[i], "nav")
             group.addButton(btn)
             v.addWidget(btn)
             self._nav_buttons.append(btn)
@@ -361,10 +378,21 @@ class WorkspaceWindow(QMainWindow):
         th = QHBoxLayout(top)
         th.setContentsMargins(0, 0, 0, 0)
         th.setSpacing(8)
-        self._theme_btn = self._foot_btn("◐", self.toggle_theme, "切换深色/浅色")
-        self._maximize_btn = self._foot_btn("⛶", self.toggle_maximize,
+        self._theme_btn = self._foot_btn("", self.toggle_theme, "切换深色/浅色")
+        self._maximize_btn = self._foot_btn("  最大化", self.toggle_maximize,
                                            "最大化/还原")
-        self._foot_pet = self._foot_btn("←", self.hide_to_pet, "回到桌宠")
+        self._foot_pet = self._foot_btn("", self.hide_to_pet, "回到桌宠")
+        text_color, _ = _icon_palette(self._theme)
+        self._theme_btn.setIcon(icon("moon" if self._theme == "dark" else "sun",
+                                     text_color, 17))
+        self._theme_btn.setIconSize(QSize(17, 17))
+        self._maximize_btn.setIcon(icon("maximize", text_color, 17))
+        self._maximize_btn.setIconSize(QSize(17, 17))
+        self._foot_pet.setIcon(icon("arrow-left", text_color, 17))
+        self._foot_pet.setIconSize(QSize(17, 17))
+        self._icon_buttons[self._theme_btn] = ("theme", "theme")
+        self._icon_buttons[self._maximize_btn] = ("maximize", "normal")
+        self._icon_buttons[self._foot_pet] = ("arrow-left", "normal")
         th.addWidget(self._theme_btn)
         th.addWidget(self._maximize_btn)
         th.addWidget(self._foot_pet)
@@ -407,17 +435,21 @@ class WorkspaceWindow(QMainWindow):
         h.addWidget(self._title)
         h.addStretch(1)
 
-        for icon, tip, slot in (
-            ("🔍", "聚焦命令栏", self._focus_command),
-            ("⟳", "刷新当前页", self.refresh_current),
-            ("🔔", "查看执行状态", lambda: self.switch_page(3)),
-            ("⛶", "最大化 / 还原", self.toggle_maximize),
+        text_color, _ = _icon_palette(self._theme)
+        for name, tip, slot in (
+            ("search", "聚焦命令栏", self._focus_command),
+            ("refresh", "刷新当前页", self.refresh_current),
+            ("bell", "查看执行状态", lambda: self.switch_page(3)),
+            ("maximize", "最大化 / 还原", self.toggle_maximize),
         ):
-            btn = QPushButton(icon)
+            btn = QPushButton()
             btn.setObjectName("topIcon")
+            btn.setIcon(icon(name, text_color, 16))
+            btn.setIconSize(QSize(16, 16))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(tip)
             btn.clicked.connect(slot)
+            self._icon_buttons[btn] = (name, "normal")
             h.addWidget(btn)
         return bar
 
@@ -430,11 +462,15 @@ class WorkspaceWindow(QMainWindow):
         h.setContentsMargins(18, 10, 18, 10)
         h.setSpacing(8)
 
-        plus = QPushButton("＋")
+        text_color, _ = _icon_palette(self._theme)
+        plus = QPushButton()
         plus.setObjectName("topIcon")
+        plus.setIcon(icon("plus", text_color, 18))
+        plus.setIconSize(QSize(18, 18))
         plus.setCursor(Qt.PointingHandCursor)
         plus.setToolTip("添加上下文（@ 引用桌面文件 / 资料）")
         plus.clicked.connect(self._add_context)
+        self._icon_buttons[plus] = ("plus", "normal")
         h.addWidget(plus)
 
         self._chat_input = QLineEdit()
@@ -458,11 +494,14 @@ class WorkspaceWindow(QMainWindow):
         access.setFixedWidth(110)
         h.addWidget(access)
 
-        lang = QPushButton("中")
+        lang = QPushButton()
         lang.setObjectName("topIcon")
+        lang.setIcon(icon("globe", text_color, 16))
+        lang.setIconSize(QSize(16, 16))
         lang.setCursor(Qt.PointingHandCursor)
         lang.setToolTip("界面语言：中文")
         lang.setFixedWidth(40)
+        self._icon_buttons[lang] = ("globe", "normal")
         h.addWidget(lang)
 
         model = QComboBox()
@@ -472,10 +511,13 @@ class WorkspaceWindow(QMainWindow):
         model.setFixedWidth(96)
         h.addWidget(model)
 
-        send = QPushButton("发送 ▲")
+        send = QPushButton("  发送")
         send.setObjectName("sendBtn")
+        send.setIcon(icon("send", "#FFFFFF", 16))
+        send.setIconSize(QSize(16, 16))
         send.setCursor(Qt.PointingHandCursor)
         send.clicked.connect(self._send)
+        self._icon_buttons[send] = ("send", "white")
         h.addWidget(send)
         return bar
 
@@ -486,9 +528,14 @@ class WorkspaceWindow(QMainWindow):
         self._status.addWidget(self._status_label)
         return self._status
 
-    def _ghost(self, text, slot) -> QPushButton:
-        btn = QPushButton(text)
+    def _ghost(self, text, slot, icon_name=None) -> QPushButton:
+        btn = QPushButton("  " + text if icon_name else text)
         btn.setObjectName("ghostButton")
+        if icon_name:
+            text_color, _ = _icon_palette(self._theme)
+            btn.setIcon(icon(icon_name, text_color, 15))
+            btn.setIconSize(QSize(15, 15))
+            self._icon_buttons[btn] = (icon_name, "normal")
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(slot)
         return btn
@@ -600,9 +647,9 @@ class WorkspaceWindow(QMainWindow):
             ["偏好", "当前值", "置信度", "命中", "证据数"])
         v.addWidget(self._prefs_table, 1)
         v.addWidget(self._button_row(
-            self._ghost("⟳ 刷新", self._refresh_prefs),
-            self._ghost("删除选中", self._delete_pref),
-            self._ghost("清空全部", self._clear_prefs)))
+            self._ghost("刷新", self._refresh_prefs, "refresh"),
+            self._ghost("删除选中", self._delete_pref, "trash"),
+            self._ghost("清空全部", self._clear_prefs, "x-circle")))
         return page, self._refresh_prefs
 
     def _selected_key(self, table, col=0):
@@ -645,8 +692,8 @@ class WorkspaceWindow(QMainWindow):
             ["规则族", "状态", "置信度", "触发", "成功", "失败"])
         v.addWidget(self._rules_table, 1)
         v.addWidget(self._button_row(
-            self._ghost("⟳ 刷新", self._refresh_rules),
-            self._ghost("删除选中", self._delete_rule)))
+            self._ghost("刷新", self._refresh_rules, "refresh"),
+            self._ghost("删除选中", self._delete_rule, "trash")))
         return page, self._refresh_rules
 
     def _refresh_rules(self):
@@ -685,9 +732,9 @@ class WorkspaceWindow(QMainWindow):
         self._detail_view.setObjectName("detailView")
         v.addWidget(self._detail_view, 1)
         v.addWidget(self._button_row(
-            self._ghost("⟳ 刷新", self._refresh_trace),
-            self._ghost("生成时间线", self.generate_timeline),
-            self._ghost("打开时间线", self._open_timeline)))
+            self._ghost("刷新", self._refresh_trace, "refresh"),
+            self._ghost("生成时间线", self.generate_timeline, "clock"),
+            self._ghost("打开时间线", self._open_timeline, "open")))
         return page, self._refresh_trace
 
     def _refresh_trace(self):
@@ -755,8 +802,8 @@ class WorkspaceWindow(QMainWindow):
         self._delivery_list.itemDoubleClicked.connect(self._open_delivery)
         v.addWidget(self._delivery_list, 1)
         v.addWidget(self._button_row(
-            self._ghost("⟳ 刷新", self._refresh_deliveries),
-            self._ghost("打开选中", self._open_delivery)))
+            self._ghost("刷新", self._refresh_deliveries, "refresh"),
+            self._ghost("打开选中", self._open_delivery, "open")))
         return page, self._refresh_deliveries
 
     def _refresh_deliveries(self):
@@ -788,8 +835,8 @@ class WorkspaceWindow(QMainWindow):
         self._about_view.setObjectName("detailView")
         v.addWidget(self._about_view, 1)
         v.addWidget(self._button_row(
-            self._ghost("打开设置窗口", self.settings_requested.emit),
-            self._ghost("⟳ 刷新状态", self._refresh_status)))
+            self._ghost("打开设置窗口", self.settings_requested.emit, "settings"),
+            self._ghost("刷新状态", self._refresh_status, "refresh")))
         self._refresh_about()
         return page, self._refresh_about
 
@@ -808,17 +855,17 @@ class WorkspaceWindow(QMainWindow):
             "<h2>凌零 · 桌面 AI 数字员工 %s</h2>"
             "<p>这个窗口对标 WorkBuddy 的深色主窗口：顶部菜单栏、左侧品牌导航、"
             "主区顶部标题栏与底部全局命令栏。可以拖动边框调整大小、双击标题栏最大化、"
-            "点右上角或这里的「⛶ 最大化」按钮铺满屏幕。关闭只会隐藏窗口，"
+            "点右上角或这里的「最大化」按钮铺满屏幕。关闭只会隐藏窗口，"
             "桌宠与托盘继续常驻；从桌宠右键菜单、托盘菜单或输入条的「工作台」"
             "按钮都能再打开。</p>"
             "<h3>窗口操作</h3><ul>"
-            "<li>⛶ 最大化 / 还原：切换铺满与窗口模式（状态会被记住）</li>"
-            "<li>◐ 深色 / 浅色：切换主题（会被记住，默认深色）</li>"
-            "<li>← 回到桌宠：隐藏窗口，回到桌面角色</li>"
+            "<li>最大化 / 还原按钮：切换铺满与窗口模式（状态会被记住）</li>"
+            "<li>主题按钮：切换深色 / 浅色（会被记住，默认深色）</li>"
+            "<li>回到桌宠按钮：隐藏窗口，回到桌面角色</li>"
             "<li>Esc：关闭窗口（不退出程序）</li></ul>"
             "<h3>底部命令栏</h3><ul>"
-            "<li>＋ 添加上下文、@ 引用桌面文件、/ 调用技能与指令</li>"
-            "<li>回车或「发送 ▲」把指令交给桌宠执行，自动切到对话页查看</li>"
+            "<li>加号按钮添加上下文、@ 引用桌面文件、/ 调用技能与指令</li>"
+            "<li>回车或「发送」把指令交给桌宠执行，自动切到对话页查看</li>"
             "<li>分支 / 访问级别 / 模型为界面展示项，实际行为由本机设置与 Key 决定</li></ul>"
             "<h3>当前开关</h3><ul>%s</ul>"
             "<h3>数据位置</h3><p>轨迹、偏好、规则保存在本机数据目录，"
@@ -895,7 +942,26 @@ class WorkspaceWindow(QMainWindow):
     def _apply_theme(self, theme: str):
         self._theme = theme if theme in ("light", "dark") else "dark"
         self.setStyleSheet(_qss(_DARK if self._theme == "dark" else _LIGHT))
-        self._theme_btn.setText("☀" if self._theme == "dark" else "◐")
+        # 矢量图标随主题重新着色；主题按钮在月亮/太阳之间切换
+        self._recolor_icons()
+        if hasattr(self, "_theme_btn"):
+            name = "moon" if self._theme == "dark" else "sun"
+            self._theme_btn.setIcon(icon(name, _icon_palette(self._theme)[0], 17))
+            self._icon_buttons[self._theme_btn] = (name, "theme")
+
+    def _recolor_icons(self):
+        """主题切换后，把所有非纯白图标重绘成新主题的文字色。"""
+        text_color, nav_color = _icon_palette(self._theme)
+        for btn, (name, kind) in list(self._icon_buttons.items()):
+            if kind == "white":
+                color = "#FFFFFF"
+            elif kind == "nav":
+                color = nav_color
+            elif kind == "theme":
+                color = text_color
+            else:
+                color = text_color
+            btn.setIcon(icon(name, color, btn.iconSize().width() or 16))
 
     def _apply_maximize(self, on: bool):
         self._max_state = bool(on)
@@ -903,7 +969,7 @@ class WorkspaceWindow(QMainWindow):
             self.showMaximized()
         else:
             self.showNormal()
-        self._maximize_btn.setText("⛶ 还原" if on else "⛶ 最大化")
+        self._maximize_btn.setText("  还原" if on else "  最大化")
 
     def toggle_maximize(self):
         self._apply_maximize(not self._max_state)
