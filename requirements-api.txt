@@ -1,0 +1,14 @@
+# ------------------------------------------------------------
+# API 服务最小依赖（Docker 镜像、纯服务化部署使用）
+#   pip install -r requirements-api.txt
+#   uvicorn api.server:app --host 127.0.0.1 --port 8000
+#
+# 这里刻意不含 PyQt5 / 文档工厂 / torch：api/ 的顶层 import 链不需要它们，
+# 把它们塞进服务镜像只会带来数 GB 体积和 Qt 原生库的运行时依赖。
+# ------------------------------------------------------------
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+pydantic>=2.5,<3.0
+python-multipart>=0.0.9,<1.0
+requests>=2.31,<3.0
+PyYAML>=6.0,<7

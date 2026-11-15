@@ -342,13 +342,21 @@ class PetWindow(QWidget):
         act_deliveries.triggered.connect(self._show_deliveries)
         act_worklog = QAction("📔 工作日志", menu)
         act_worklog.triggered.connect(self._show_worklog)
+        act_undo = QAction("↩️ 撤销上一轮", menu)
+        act_undo.triggered.connect(lambda: self.fw.send_command("撤销"))
+        act_skills = QAction("🎯 我的技能", menu)
+        act_skills.triggered.connect(lambda: self.fw.send_command("技能列表"))
+        act_save_skill = QAction("💾 把上一轮存成技能", menu)
+        act_save_skill.triggered.connect(
+            lambda: self.fw.send_command("存成技能"))
         act_settings = QAction("⚙ 设置", menu)
         act_settings.triggered.connect(self.show_settings)
         act_exit = QAction("✖ 退出", menu)
         act_exit.triggered.connect(self.quit_app)
-        for a in (act_preview, act_edit_doc, act_workflows, act_memory,
-                  act_reminders, act_todos, act_deliveries, act_worklog,
-                  act_settings, act_exit):
+        for a in (act_preview, act_edit_doc, act_workflows, act_undo,
+                  act_save_skill, act_skills, act_memory, act_reminders,
+                  act_todos, act_deliveries, act_worklog, act_settings,
+                  act_exit):
             menu.addAction(a)
         return menu
 

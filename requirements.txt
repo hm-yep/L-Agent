@@ -1,40 +1,23 @@
-# ---------- Web 服务 ----------
-fastapi>=0.110
-uvicorn[standard]>=0.27
-pydantic>=2.5
-python-multipart>=0.0.9
-requests>=2.31
+# ------------------------------------------------------------
+# 凌零 · 桌面版核心依赖
+#   pip install -r requirements.txt   → 可跑 python main.py 与 API 服务
+#
+# 约定：
+#   * 每项都带下界与上界，避免未来大版本静默破坏兼容性；
+#   * 重能力（RAG / 语音 / LoRA / 开发）拆到 requirements-*.txt，按需安装；
+#   * 可选组统一以本文件（或 requirements-api.txt）为基座，不重复声明版本。
+# ------------------------------------------------------------
+-r requirements-api.txt
 
-# ---------- RAG ----------
-langchain>=0.2
-langchain-community>=0.2
-langchain-text-splitters>=0.2
-langchain-chroma>=0.1
-langchain-huggingface>=0.1
-chromadb>=0.4
-sentence-transformers>=2.6
+# ---------- 桌面 UI ----------
+PyQt5>=5.15,<6
+Pillow>=10.0,<12
 
-# ---------- 语音 ----------
-faster-whisper>=1.0
+# ---------- 文档工厂 ----------
+python-pptx>=0.6,<2
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
 
-# ---------- 测试 ----------
-pytest>=8.0
-httpx>=0.27
-
-# ---------- LoRA 微调 ----------
-peft>=0.10
-transformers>=4.40
-datasets>=2.18
-accelerate>=0.29
-pyyaml>=6.0
-
-# ---------- 基础依赖----------
-PyQt5>=5.15
-PyTorch>=2.0
-opencv-python>=4.8
-mediapipe>=0.10
-openpyxl>=3.1
-python-docx>=1.1
-python-pptx>=0.6
-pandas>=2.0
-matplotlib>=3.7
+# ---------- 数据分析 ----------
+pandas>=2.0,<3
+matplotlib>=3.7,<4

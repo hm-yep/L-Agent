@@ -76,9 +76,13 @@ def _worker_main():
         except Exception as e:  # noqa: BLE001
             resp = {"ok": False, "error_type": type(e).__name__,
                     "error": str(e)}
-        stdout.write((json.dumps(resp, ensure_ascii=False) + "\n")
-                     .encode("utf-8"))
-        stdout.flush()
+        try:
+            stdout.write((json.dumps(resp, ensure_ascii=False) + "\n")
+                         .encode("utf-8"))
+            stdout.flush()
+        except OSError:
+            # 主进程已退出/重启，管道断开时安静收工，不要抛 traceback
+            break
 
 
 if __name__ == "__main__":   # python -m framework.rag_worker

@@ -10,11 +10,12 @@
 AI 配置项在运行时从 framework.config 读取，可在设置界面修改并持久化：
     api_key / base_url / model
 
-动作池（二十七个动作）:
+动作池（三十个动作）:
     search_app / open_app / show_bubble / jump / think / show_card / move_to / idle
     / screenshot / set_volume / shutdown / restart / lock / cancel_shutdown
     / create_doc / see_screen / remember / show_plan / remind / todo_add / todo_done
     / todo_list / web_search / read_doc / work_log / run_workflow / analyze_data
+    / undo_last / save_skill / run_skill
 """
 
 import json
@@ -36,7 +37,15 @@ _FAILED = object()
 # 可重试的 HTTP 状态码（限流 / 网关抖动 / 服务端临时故障）
 _RETRY_CODES = {429, 500, 502, 503, 504}
 
-SYSTEM_PROMPT = """你是"凌零"——"凌零·桌面AI助手"，一位住在用户桌面上的AI助理（数字员工），
+# ------------------------------------------------------------
+# 系统提示词按职责拆成三块，便于分别维护：
+#   PROMPT_IDENTITY_AND_FORMAT  身份、能力边界、JSON 返回格式
+#   PROMPT_ACTION_POOL          30 个动作的参数与用法（tools/check_contracts.py
+#                               会校验它覆盖了动作注册表里的每一个动作）
+#   PROMPT_RULES                重要规则、文档规范、说话风格
+# 拼接结果与原单体常量逐字相同；改动后请跑 tools/check_contracts.py。
+# ------------------------------------------------------------
+PROMPT_IDENTITY_AND_FORMAT = """你是"凌零"——"凌零·桌面AI助手"，一位住在用户桌面上的AI助理（数字员工），
 形象是一位身披银甲、佩剑的Q版小骑士，同时也是一个真正有能力的智能助理 Agent。
 
 【身份规则（最高优先级）】
@@ -57,7 +66,9 @@ SYSTEM_PROMPT = """你是"凌零"——"凌零·桌面AI助手"，一位住在�
 示例（打开应用）：[{"action": "show_bubble", "text": "遵命，这就打开。"},
                  {"action": "open_app", "app": "微信"}]
 
-【动作池】
+"""
+
+PROMPT_ACTION_POOL = """【动作池】
 1. {"action":"search_app","app":"应用名"}   在本机查找某个应用程序
 2. {"action":"open_app","app":"应用名"}     在本机打开某个应用程序
 3. {"action":"show_bubble","text":"要说的话"}  把你想说的话显示出来（所有回答都用这个）
@@ -120,8 +131,19 @@ SYSTEM_PROMPT = """你是"凌零"——"凌零·桌面AI助手"，一位住在�
     用户给的是文件路径而不是网页资料时【优先用它】，不要改用 read_doc 硬读文字。
     chart 填"不要"就只给文字结论；结论会自动进入你的工作上下文，
     之后你可以直接讲给用户，不要在气泡里复述全部数字。
+28. {"action":"undo_last"}                                    撤销：把上一轮在这台
+    电脑上改的东西逐项退回去（音量、待办、提醒、长期记忆、本轮生成的文件）。
+    回退由程序按账目执行，不经过你；撤不成的项程序会逐条说明原因。
+29. {"action":"save_skill"}                                   把上一轮真的做成过的动作
+    序列抽成可重放技能存下来。程序自己抽骨架，你不给参数也不许复述步骤；
+    含 create_doc/电源/工作流的轨迹会被程序拒收并说明理由，这是设计不是故障。
+30. {"action":"run_skill","skill":"技能名"}                   重放一条已学会的技能：
+    程序把里面的步骤直接插进队列执行，一步都不再问你。技能名从【已学会的技能】
+    一节里挑；该节括号里标了这条技能需要哪些参数，用户话里没提到就别硬跑。
 
-【重要规则】
+"""
+
+PROMPT_RULES = """【重要规则】
 - 用户说"帮我找xx""xx在哪里"：【必须】带上 search_app 动作
 - 用户说"打开xx""启动xx"：【必须】在动作序列里带上 open_app 动作，
   绝不能只回一句"好的这就打开"却不给动作。标准序列：
@@ -198,6 +220,15 @@ SYSTEM_PROMPT = """你是"凌零"——"凌零·桌面AI助手"，一位住在�
 - 用户说"来份早报""跑个工作流""执行工作流XX"或点名某个模板：【必须】带上
   run_workflow 动作，name 从【工作流模板】里挑最贴近的一个；
   一个模板也没匹配上时，用 show_bubble 列出现成的模板名供用户挑。
+- 用户说"撤销""撤回""刚才那些别做了""恢复原样"：【必须】带上 undo_last 动作。
+  这一步是程序按上一轮的账逐项回退，不调模型；撤销完成后你会看到程序说明。
+  绝不要用 show_bubble 口头答应"我帮你撤了"却不带 undo_last——那等于没撤。
+- 用户说"存成技能""学会这个""以后就这么做"：带上 save_skill（无参数）。
+  程序抽的是【上一轮真的做成过的动作序列】，你无法伪造它，也不用复述它。
+- 用户点名的事情在【已学会的技能】里有：【必须】带上 run_skill，skill 从清单里
+  挑一个名字。重放那几步是程序直接执行、不再经过你的，所以别把技能里的步骤
+  又手动拆成一遍 web_search/todo_add（那是重复劳动）。
+  清单括号里标了需要哪些参数而用户没说，就先 show_bubble 问一句，别猜。
 - 除此之外的一切问题（"讲个笑话""1+1等于几""帮我解这道方程""今天心情不好""讲讲相对论"）：
   你直接用自己的知识回答，用 show_bubble 输出完整答案。禁止回复"我只会这些指令""无法回答"这类话。
 - 讲数学题/写代码题时：text 里写清楚步骤，控制在 120 字以内，优先给结论再给简要过程
@@ -207,6 +238,10 @@ SYSTEM_PROMPT = """你是"凌零"——"凌零·桌面AI助手"，一位住在�
   可以幽默，但【禁止】软萌语气词（呀/啦/哦/哟/嘛/嗯嗯）和波浪号"~"，不撒娇、不卖萌、不用可爱表情
 - 用中文回答，语气自然，像一位可靠的骑士伙伴"""
 
+SYSTEM_PROMPT = (PROMPT_IDENTITY_AND_FORMAT
+                 + PROMPT_ACTION_POOL
+                 + PROMPT_RULES)
+
 
 class AIWorker(QThread):
     """AI 请求线程（避免阻塞 UI 主线程）"""
@@ -215,13 +250,15 @@ class AIWorker(QThread):
     failed = pyqtSignal(str)         # 失败：错误信息
 
     def __init__(self, message: str, history: list, personality: str,
-                 parent=None, facts: str = "", notes: str = ""):
+                 parent=None, facts: str = "", notes: str = "",
+                 skills: str = ""):
         super().__init__(parent)
         self.message = message
         self.history = history
         self.personality = personality
         self.facts = (facts or "").strip()   # 长期记忆（注入系统提示词）
         self.notes = (notes or "").strip()   # 检索资料（搜索/读文档的成果）
+        self.skills = (skills or "").strip()  # 技能清单（run_skill 有名可挑）
         self._stopped = False
 
     def stop(self):
@@ -269,6 +306,9 @@ class AIWorker(QThread):
                               for t in config.WORKFLOW_TEMPLATES)
             prompt += ("\n\n【工作流模板】以下一键工作流可用 run_workflow "
                        "直接启动（系统会自动按模板编排多步任务）：\n" + lines)
+        if self.skills:
+            # 技能清单：catalog_text 自带标题和说明，这里只拼接
+            prompt += "\n" + self.skills
         messages = [{"role": "system", "content": prompt}]
         messages.extend(self.history[-config.MEMORY_MAX_TURNS * 2:])
         messages.append({"role": "user", "content": self.message})

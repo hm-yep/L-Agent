@@ -6,13 +6,23 @@
 """
 
 import json
+import sys
 from pathlib import Path
 
-import yaml
-from datasets import Dataset
-from peft import LoraConfig, TaskType, get_peft_model
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          TrainingArguments, Trainer)
+try:
+    import yaml
+    from datasets import Dataset
+    from peft import LoraConfig, TaskType, get_peft_model
+    from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                              TrainingArguments, Trainer)
+except ImportError as exc:  # noqa: BLE001 - 启动即给出可执行的安装指引，而非堆栈
+    sys.stderr.write(
+        "[LoRA] 缺少训练依赖，无法启动微调：{0}\n"
+        "请先安装：pip install peft transformers datasets accelerate pyyaml torch\n"
+        "提示：数据层校验不依赖这些库，可直接运行 "
+        "pytest tests/test_finetune_data.py\n".format(exc)
+    )
+    raise SystemExit(2)
 
 
 def load_config(path: str = "finetune/config.yaml") -> dict:

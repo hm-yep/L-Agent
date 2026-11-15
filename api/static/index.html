@@ -67,11 +67,18 @@
   .modal-box input[type=text] { width: 100%; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .modal-actions button.ghost { background: #4E565E; }
+  .token-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .92; }
+  .token-row label { white-space: nowrap; }
+  .token-row input { flex: 0 1 260px; border: 1px solid rgba(255,255,255,.45); border-radius: 6px; padding: 5px 8px; font-size: 12px; color: #26303a; background: #fff; outline: none; }
 </style>
 </head>
 <body>
 <header>
   <h1>凌零 · 智能体服务</h1>
+  <div class="token-row">
+    <label for="apiToken">访问令牌（服务端设置 LINGLING_API_TOKEN 时填写）</label>
+    <input id="apiToken" type="password" placeholder="留空 = 仅本机免令牌访问" autocomplete="off">
+  </div>
 </header>
 <div id="chat"></div>
 <footer>
@@ -108,6 +115,26 @@ const input = document.getElementById('input');
 const send = document.getElementById('send');
 const recordBtn = document.getElementById('record');
 let sid = null;
+
+// 访问令牌只保存在当前标签页（sessionStorage），关闭即失效，不写进 URL 或日志。
+// 服务端未配置 LINGLING_API_TOKEN 时留空即可：默认只接受本机回环请求。
+const tokenInput = document.getElementById('apiToken');
+tokenInput.value = sessionStorage.getItem('lingling_api_token') || '';
+tokenInput.addEventListener('change', () => {
+  sessionStorage.setItem('lingling_api_token', tokenInput.value.trim());
+});
+function authHeaders(base) {
+  const token = (tokenInput.value || '').trim();
+  const headers = Object.assign({}, base || {});
+  if (token) headers['X-API-Key'] = token;
+  return headers;
+}
+function errHint(resp, data) {
+  if (resp.status === 401 || resp.status === 403) {
+    return (data.detail || '未授权') + '（服务端设置了令牌时，请在页首填写访问令牌）';
+  }
+  return data.detail || '未知';
+}
 
 function addMsg(role, text, refs) {
   const div = document.createElement('div');
@@ -155,7 +182,7 @@ async function sendMsg() {
   try {
     const resp = await fetch('/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({
         message: text, session_id: sid,
         use_rag: document.getElementById('use_rag').checked,
@@ -163,7 +190,7 @@ async function sendMsg() {
       }),
     });
     const data = await resp.json();
-    if (!resp.ok) { loading.textContent = '出错：' + (data.detail || '未知'); }
+    if (!resp.ok) { loading.textContent = '出错：' + errHint(resp, data); }
     else {
       sid = data.session_id;
       loading.textContent = data.reply + describeSearchRefs(data.references);
@@ -189,12 +216,12 @@ document.getElementById('agentBtn').onclick = async () => {
   try {
     const r = await fetch('/agent/run', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({task})
     });
     const data = await r.json();
     if (!r.ok) {
-      loading.textContent = '多智能体失败：' + (data.detail || '未知');
+      loading.textContent = '多智能体失败：' + errHint(r, data);
       return;
     }
     let text = `任务：${data.task}\n\n`;
@@ -246,12 +273,12 @@ document.getElementById('ingestConfirm').onclick = async () => {
   try {
     const r = await fetch('/ingest/text', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({text: text, source: source})
     });
     const data = await r.json();
     if (!r.ok) {
-      loading.textContent = '❌ 入库失败：' + (data.detail || '未知');
+      loading.textContent = '❌ 入库失败：' + errHint(r, data);
       return;
     }
     loading.textContent =
@@ -286,9 +313,9 @@ recordBtn.onmousedown = async (e) => {
       fd.append('use_search', document.getElementById('use_search').checked);
       if (sid) fd.append('session_id', sid);
       try {
-        const r = await fetch('/voice/chat', {method: 'POST', body: fd});
+        const r = await fetch('/voice/chat', {method: 'POST', headers: authHeaders(), body: fd});
         const data = await r.json();
-        if (!r.ok) loading.textContent = '语音失败：' + (data.detail || '未知');
+        if (!r.ok) loading.textContent = '语音失败：' + errHint(r, data);
         else {
           sid = data.session_id;
           loading.textContent = data.reply +

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """动作解析器：校验 AI 返回的动作序列
 
-动作池包含二十七个动作，AI 返回的 JSON 经本校验后
+动作池包含三十个动作，AI 返回的 JSON 经本校验后
 生成可执行的标准化动作列表（非法项被剔除/修正）。
 """
 
@@ -26,6 +26,8 @@ VALID_ACTIONS = {
     "web_search", "read_doc", "work_log", "run_workflow",
     # ---- 数据分析（表格统计与出图）----
     "analyze_data",
+    # ---- 后悔药（撤销上一轮）/ 技能层（存一次，以后零规划重放）----
+    "undo_last", "save_skill", "run_skill",
 }
 
 # 各动作的必填参数
@@ -47,6 +49,8 @@ REQUIRED_PARAMS = {
     "read_doc": ["path"],
     "run_workflow": ["name"],
     "analyze_data": ["path"],
+    "run_skill": ["skill"],
+    # undo_last / save_skill 无参数：撤销对象是上一轮的账，存对象是这一轮的轨迹
     # show_plan 的 steps 必须是非空列表，走专用校验；
     # todo_done 的 index/text 二选一，由执行层处理
 }
@@ -80,6 +84,7 @@ PARAM_ALIASES = {
     # 联网检索 / 读文档 / 工作流
     "query":    ["query", "keyword", "search", "搜索词", "关键词", "问题", "查询"],
     "name":     ["name", "workflow", "template", "模板", "工作流"],
+    "skill":    ["skill", "skill_name", "技能", "技能名", "name"],
     # 文档保存位置（create_doc 可选）
     "location": ["location", "save_to", "save_dir",
                  "保存位置", "保存到", "存放位置", "位置"],

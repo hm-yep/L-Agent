@@ -1,0 +1,7 @@
+# 可选：语音输入（API 的 /voice 与 /voice/chat，桌面版暂无语音入口）
+#   pip install -r requirements-voice.txt
+# faster-whisper 首次转写会下载模型权重。
+-r requirements-api.txt
+
+faster-whisper>=1.0,<2.0
+av>=10.0,<14.0

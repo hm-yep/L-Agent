@@ -17,7 +17,7 @@ if not defined RUNNER (
 )
 if not defined RUNNER (
     echo [ERROR] No usable Python with PyQt5 found.
-    echo Run: python -m pip install PyQt5 requests
+    echo Run: python -m pip install -r requirements.txt
     pause
     exit /b 1
 )

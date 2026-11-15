@@ -16,16 +16,18 @@
 
 from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal
 import os
+import re
 import time
 
 from framework import config
+from framework import effect_journal, skill_store
 from framework.action_parser import parse_actions
 from framework.ai_engine import AIWorker
 from framework.memory_system import MemorySystem
 from framework.pet_controller import PetController
 from framework.system_controller import SystemController
 from framework.task_board import TaskBoard, format_duration
-from framework.utils import logger
+from framework.utils import logger, normalize_intent
 from framework.web_search import web_search, format_notes as format_search_notes
 
 
@@ -260,6 +262,9 @@ class Framework(QObject):
         self._suppress_fallback = False             # 计划轮次不走意图兜底
         self.plan_card = None                       # 常驻计划卡（ui/plan_card.py，懒加载）
         self._busy = False                          # 正在执行动作序列
+        self._finish_done = False                   # 当前动作是否已收尾（防重复推进）
+        # 以前这个字段只在 _run_next_action 里动态创建，收尾处只能靠
+        # getattr(self, "_finish_done", ...) 兜底；现在显式声明，状态一目了然。
         self._current_user_text = ""                # 当前这一轮的用户输入
         self._current_action_name = ""              # 正在执行的动作名
         self._reply_parts = []                      # 当前这一轮累积的回复文本
@@ -274,6 +279,17 @@ class Framework(QObject):
         self._plan_auto_plan = False                # 重规划轮在途，等 show_plan 自动接续
         # 工作流启动请求：本轮动作全部收尾后作为新任务交给 send_command
         self._workflow_start = ""
+        # 效果记账：本轮开始前的世界快照 + 跑过的动作，收口时算差集（后悔药）
+        self._world_before = None                   # 归一化五元组，None=本轮没记账
+        self._turn_started_at = 0.0                 # 本轮开始时刻（删文件的门禁）
+        self._turn_actions = []                     # 本轮跑过的动作名（含不可见后果）
+        self._last_undo = None                      # {"items","spots"}，撤一次就清空
+        self._effects_spoken = False                # 本轮是否已播报过差集
+        # 技能层：上一轮的动作序列（用户说"存成技能"时拿它抽骨架）+ 技能库
+        self._last_turn_actions = []
+        self._last_turn_text = ""                   # 那轮的原话（技能名从这来）
+        self._last_skill_offer_at = 0.0             # 提议保存的冷却，防碎碎念
+        self.skills = skill_store.SkillStore()
 
         # 任务台：提醒 + 待办（JSON 持久化），定时轮询到期提醒
         self.tasks = TaskBoard()
@@ -391,6 +407,61 @@ class Framework(QObject):
             logger.info(f"[Framework] 性格切换: {personality}")
 
     # ============================================================
+    # AI 线程的唯一出入口
+    # ============================================================
+    def _start_ai_worker(self, message: str, *, history=None,
+                         facts=None, notes=None, skills=None):
+        """创建并启动一轮 AI 请求。
+
+        以前有 6 个调用点各自 new 一个 AIWorker 并重复 connect，而且只有
+        「上一轮还在跑」这一条分支才断开旧连接；已 finished 的 QThread 因
+        parent=self 会永久挂在 Framework 的子对象树上，随对话轮次线性累积。
+        现在统一在这里：断开旧信号 → 可回收的旧线程 deleteLater → 建新线程。
+
+        facts / notes / skills 传 None 表示「不传这个参数」，保留各调用点
+        原本的上下文口径（例如文件改写轮刻意不带记忆与资料，避免串味）。
+        """
+        old = self._ai_worker
+        if old is not None:
+            for sig_name, slot in (("finished", self._on_ai_finished),
+                                   ("failed", self._on_ai_failed)):
+                try:
+                    getattr(old, sig_name).disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            try:
+                running = old.isRunning()
+            except RuntimeError:
+                running = False
+            if running:
+                try:
+                    old.stop()
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    old.deleteLater()   # 不再让已结束的线程挂在父对象树上
+                except RuntimeError:
+                    pass
+
+        kwargs = {"parent": self}
+        if facts is not None:
+            kwargs["facts"] = facts
+        if notes is not None:
+            kwargs["notes"] = notes
+        if skills is not None:
+            kwargs["skills"] = skills
+        worker = AIWorker(
+            message,
+            self.memory.get_context() if history is None else history,
+            self.personality, **kwargs)
+        worker.finished.connect(self._on_ai_finished)
+        worker.failed.connect(self._on_ai_failed)
+        self._ai_worker = worker
+        worker.start()
+        return worker
+
+    # ============================================================
     # 主入口：处理用户输入
     # ============================================================
     def send_command(self, text: str):
@@ -471,9 +542,33 @@ class Framework(QObject):
                 # 执行中来了一条新任务：先收尾当前计划（汇报进度）再走正常流程
                 self._abandon_plan()
 
-        logger.info(f"[Framework] 用户输入: {text}")
-        self._current_user_text = text
-        self._reply_parts = []
+        # 确定性短指令：当场执行，不问模型（API 欠费时撤销和存技能照样好用）
+        if self._plan is None and len(text) <= config.SHORT_CMD_MAX_LEN:
+            if self._fast_intent(text, config.UNDO_WORDS):
+                self._said(text)
+                self._begin_turn(text, journal=False)
+                self._do_undo_last({})
+                return
+            if self._fast_intent(text, config.SKILL_SAVE_WORDS):
+                self._said(text)
+                self._begin_turn(text, journal=False)
+                self._do_save_skill({})
+                return
+            if self._fast_intent(text, config.SKILL_LIST_WORDS):
+                self._said(text)
+                self._show_skills()
+                return
+        # 技能直放：门限放宽（技能名可能就是当初那句长任务），但必须
+        # 逐字叫得出名字且参数全抠得齐，差一个槽就交回模型去问
+        if self._plan is None and len(text) <= config.SKILL_REPLAY_MAX_LEN:
+            if self._replay_skill(text):
+                self._said(text)
+                return
+
+        # 用户原话不落盘：这句话可能含姓名、路径、账号等隐私，
+        # 只记录长度便于排查"这一轮有没有进来"，内容留在内存与聊天面板里。
+        logger.info(f"[Framework] 用户输入: <{len(text)} 字，内容不落盘>")
+        self._begin_turn(text)
         self._reference_notes = []      # 新话题：清空上一话题的检索资料
         self._search_quality_retried = False   # 新话题：质量纠正次数清零
         self._doc_quality_retried = False
@@ -482,14 +577,10 @@ class Framework(QObject):
         self.set_pose("think")
 
         # 启动 AI 线程（长期记忆一并注入，AI 回答时可自然运用）
-        self._ai_worker = AIWorker(
-            ai_message, self.memory.get_context(), self.personality, parent=self,
+        self._start_ai_worker(
+            ai_message,
             facts=self.memory.get_facts_text(),
-            notes=self._notes_text()
-        )
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
+            notes=self._notes_text(), skills=self.skills.catalog_text())
 
     def _on_ai_finished(self, actions: list):
         """AI 返回动作序列（整体兜底：处理出错只结束本轮，绝不闪退）"""
@@ -497,8 +588,7 @@ class Framework(QObject):
             self._on_ai_finished_inner(actions)
         except Exception:  # noqa: BLE001
             logger.exception("[Framework] 处理 AI 回复时出错")
-            self._plan_round_pending = False
-            self._plan_auto_plan = False
+            self._clear_plan_transient()
             self._busy = False
             self._action_queue = []
             self.set_pose("idle")
@@ -701,9 +791,7 @@ class Framework(QObject):
 
     def _on_ai_failed(self, error: str):
         """AI 请求失败：明确告知用户并复位状态（不卡死、不留悬空状态）"""
-        self._plan_round_pending = False
-        self._plan_auto_plan = False
-        self._plan_fail_note = ""
+        self._clear_plan_transient()
         self._busy = False
         self._action_queue = []
         self.show_bubble(f"{error}。可再试一次。")
@@ -720,8 +808,10 @@ class Framework(QObject):
             logger.exception("[Framework] 动作链异常（已兜底收尾）")
             self._action_queue = []
             self._busy = False
+            self._review_effects(offer=False)
             self.set_pose("idle")
             self.show_bubble("出了点小状况，这一轮先到这里，可再吩咐。")
+            self._announce_effects()
 
     def _run_next_action_inner(self):
         if not self._action_queue:
@@ -756,11 +846,13 @@ class Framework(QObject):
                         return
                     self._plan_fail_note = ""
                     self._busy = False
+                    self._review_effects()
                     self.set_pose("idle")
                     self.show_bubble(
                         f"「{fail_note}」卡住了，计划推进到 "
                         f"{done}/{len(steps)} 步。说「继续」我再想办法，"
                         f"或直接吩咐别的事。")
+                    self._announce_effects()
                     return
                 if plan.get("rounds", 0) < config.PLAN_MAX_ROUNDS:
                     if not self._plan_round_had_actions:
@@ -776,19 +868,25 @@ class Framework(QObject):
                     return
                 # 轮数安全阀用尽仍未完成：汇报进度交还用户
                 self._busy = False
+                self._review_effects()
                 self.set_pose("idle")
                 self.show_bubble(f"计划推进到 {done}/{len(steps)} 步，"
                                  f"说「继续」我接着干，或直接吩咐别的事。")
+                self._announce_effects()
                 return
+            self._review_effects()
             self._busy = False
             self.set_pose("idle")
+            self._announce_effects()
             return
 
         action = self._action_queue.pop(0)
         self._current_action_name = action["action"]
+        self._turn_actions.append(action)   # 轨迹：收口时抽技能、算撤不回项
         self._finish_done = False          # 本动作是否已收尾（防重复推进）
         self._arm_chain_watchdog(action["action"])
-        logger.info(f"[Framework] 执行动作: {action}")
+        # 只记动作名：完整 action 字典里可能有 path / fact / text 等用户数据
+        logger.info(f"[Framework] 执行动作: {action['action']}")
         try:
             self._execute_action(action)
         except Exception:  # noqa: BLE001 单个动作出错不闪退、不停摆
@@ -888,6 +986,14 @@ class Framework(QObject):
         elif name == "run_workflow":
             self._do_run_workflow(action)
 
+        # ---- 后悔药 / 技能层 ----
+        elif name == "undo_last":
+            self._do_undo_last(action)
+        elif name == "save_skill":
+            self._do_save_skill(action)
+        elif name == "run_skill":
+            self._do_run_skill(action)
+
         else:
             self._finish_action()
 
@@ -944,6 +1050,265 @@ class Framework(QObject):
                          "做得到的一定做完，做不到的会告诉你原因。")
         self._note_plan_failure(f"动作{name}等待超时")
         self._finish_action()
+
+    # ============================================================
+    # 效果记账与撤销（后悔药）：判据全在 effect_journal，这里只负责读数和执行
+    # ============================================================
+    def _said(self, text: str):
+        """短指令也要进历史，否则折叠面板里看不见自己说过什么"""
+        self.memory.add("user", text)
+        self.history_changed.emit()
+
+    def _fast_intent(self, text: str, words) -> bool:
+        """这句话是不是那句短指令（去标点后逐字比，长句子不当指令）"""
+        norm = normalize_intent(text)
+        return bool(norm) and any(w.lower() in norm for w in words)
+
+    def _begin_turn(self, text: str, journal: bool = True):
+        """开一轮：记下世界此刻的样子，收口时好算差集。
+
+        journal=False 给"这句话不改动世界"的快路径：没快照就没差集。
+        """
+        self._current_user_text = text
+        self._reply_parts = []
+        self._turn_actions = []
+        self._effects_spoken = False
+        # 上一轮的"这个动作已收尾"标记不能带进新一轮：快路径不经过动作队列，
+        # 没人替它复位，残留的 True 会让本轮收尾被整个跳过（回复进不了历史）。
+        self._finish_done = False
+        self._turn_started_at = time.time()
+        self._world_before = self._world_snapshot() \
+            if journal and config.UNDO_ENABLED else None
+
+    def _world_snapshot(self) -> dict:
+        """读五个可观测面的当前值（音量/待办/提醒/交付/长期记忆）"""
+        from framework import volume_controller as volume
+
+        todos = [(t["text"], bool(t["done"])) for t in self.tasks.todos]
+        reminders = [r["text"] for r in self.tasks.reminders]
+        deliveries = [d["path"] for d in self.tasks.deliveries]
+        try:
+            vol = volume.get_system_volume()
+        except Exception:  # noqa: BLE001 读不到就当不知道，绝不瞎猜一个值
+            vol = None
+        return effect_journal.normalize(
+            volume=vol if vol is not None and vol >= 0 else None,
+            todos=todos, reminders=reminders, deliveries=deliveries,
+            facts=list(self.memory.facts))
+
+    def _review_effects(self, offer: bool = True):
+        """本轮动作跑完：算差集存好账（撤销用它），顺带决定要不要提议存技能"""
+        actions, self._turn_actions = self._turn_actions, []
+        if actions:
+            self._last_turn_actions = actions
+            self._last_turn_text = self._current_user_text
+        if self._world_before is None:
+            return
+        before, self._world_before = self._world_before, None
+        names = [effect_journal.trajectory_name(a) for a in actions]
+        if set(names) & effect_journal.UNDO_ITSELF:
+            # 这一轮本身就是撤销：不再记账，否则"撤销"能把"撤销"撤回来
+            self._last_undo = None
+            return
+        items = effect_journal.diff(before, self._world_snapshot())
+        spots = effect_journal.blind_spots(names)
+        self._last_undo = None
+        if items or spots:
+            # 撤不回的后果也要留账：只开了个程序这种"差集为空"的轮次，用户照样
+            # 有权知道它撤不回，而不是收到一句含糊的"我没改动什么"。
+            self._last_undo = {"items": items[:config.UNDO_MAX_ITEMS],
+                               "spots": spots,
+                               "before": before}
+        if offer:
+            self._offer_skill(actions)
+
+    def _announce_effects(self):
+        """收口时如实播报：几件能撤、几件撤不回（只在确实动了世界时开口）"""
+        if self._effects_spoken or not self._last_undo:
+            return
+        self._effects_spoken = True
+        undo = self._last_undo
+        n, spots = len(undo["items"]), undo["spots"]
+        if not spots:
+            self.show_bubble(f"这一轮改了 {n} 件事，都能撤。"
+                             "说「撤销」我退回去。")
+        elif not n:
+            self.show_bubble(f"这一轮做的事一件都撤不回，"
+                             "说「撤销」时我会一条条讲为什么。")
+        else:
+            self.show_bubble(f"这一轮改了 {n} 件事能撤，另有 {len(spots)} 件撤不回"
+                             "（说「撤销」时我会一条条讲）。")
+
+    def _undo_api(self) -> dict:
+        """给回退用的七只手（判据在 effect_journal，这里只对接真实子系统）"""
+        from framework import volume_controller as volume
+
+        def set_volume(percent):
+            return volume.set_system_volume(int(percent)) >= 0
+
+        def unlink(path):
+            if os.path.exists(path):
+                os.remove(path)
+            return True
+
+        return {
+            "set_volume": set_volume,
+            "forget_fact": self.memory.forget_fact_by_text,
+            "remove_todo": self.tasks.remove_todo_by_text,
+            "reopen_todo": self.tasks.reopen_todo,
+            "remove_reminder": self.tasks.remove_reminder_by_text,
+            "unlink": unlink,
+            "drop_delivery": self.tasks.remove_delivery_by_path,
+        }
+
+    def _do_undo_last(self, action: dict):
+        """undo_last 动作：把上一轮能撤的都退回去，撤不成的逐条说原因"""
+        undo = self._last_undo
+        if not undo:
+            self.set_emotion("sweat")
+            self.show_bubble("这一轮我没改动什么，或者已经撤过了——"
+                             "没有第二次撤销可给你。")
+            self._finish_action()
+            return
+        self._last_undo = None                 # 先销账：撤一半也不给重复撤
+        items = undo["items"]
+        effect_journal.apply_ops(effect_journal.undo_ops(items),
+                                 self._undo_api(), self._turn_started_at)
+        # 不拿"执行过了"冒充"撤成了"：撤完重读一次世界，还剩多少差集就是没撤成
+        residue = effect_journal.diff(undo["before"], self._world_snapshot())
+        stuck = {it["label"] for it in residue}
+        done = [it["label"] for it in items
+                if it.get("reversible") and it["label"] not in stuck]
+        bad = [it["label"] for it in items if it["label"] in stuck]
+        spots = [s["reason"] for s in undo["spots"]]
+        self.tasks.log_work("undo", f"撤销了 {len(done)} 项，"
+                                    f"{len(bad)} 项没撤成"
+                                    + (f"，{len(spots)} 项本来就撤不回"
+                                       if spots else ""))
+        lines = [f"· 已退回：{x}" for x in done]
+        lines += [f"· 没撤成：{x}" for x in bad]
+        if done and not bad:
+            self.set_emotion("happy")
+        else:
+            self.set_emotion("sweat")
+        self.show_bubble(f"撤销：{len(done)} 项已退回"
+                         + (f"，{len(bad)} 项没撤成" if bad else "")
+                         + (f"，另有 {len(spots)} 项本来就撤不回" if spots else "")
+                         + "。")
+        self._reply_parts.append(
+            f"（撤销：退回 {len(done)} 项 / 未成 {len(bad)} 项"
+            + (f" / 撤不回 {len(spots)} 项" if spots else "") + "）")
+        if lines or spots:
+            self.show_card("↩️ 这次撤销的明细",
+                           "\n".join(lines + [f"· 撤不回：{x}" for x in spots]),
+                           f"退回 {len(done)} 项 / 没撤成 {len(bad)} 项 / "
+                           f"本来就撤不回 {len(spots)} 项")
+        self._finish_action()
+
+    # ============================================================
+    # 技能层：一次学会（存轨迹），下次一句话重放（重放零模型调用）
+    # ============================================================
+    def _offer_skill(self, actions):
+        """这轮做成了一个可重放的流程：问一句要不要存（有冷却，不碎碎念）"""
+        now = time.time()
+        if now - self._last_skill_offer_at < config.SKILL_OFFER_COOLDOWN_SEC:
+            return
+        ok, _ = skill_store.skillable(actions)
+        if not ok:
+            return
+        name = skill_store.label([a for a in actions])
+        self._last_skill_offer_at = now
+        self.show_bubble(f"这套动作（{name}）要我存成技能吗？"
+                         "说「存成技能」，下次一句话就能重放，不再重新规划。")
+
+    def _do_save_skill(self, action: dict):
+        """save_skill 动作：把上一轮的动作序列抽成技能存下来
+
+        名字取那件事的原话，不取「存成技能」这句：下次用户还得用同一句话说它。
+        """
+        item, why = self.skills.add(self._last_turn_text,
+                                    self._last_turn_actions)
+        if item:
+            self._last_turn_actions = []
+            self._last_turn_text = ""
+            slots = f"，需要：{'、'.join(item['slots'])}" if item["slots"] else ""
+            self.set_emotion("happy")
+            self.tasks.log_work("skill", f"学会技能：{item['name']}")
+            self.show_bubble(f"学会了：「{item['name']}」"
+                             f"（{len(item['steps'])} 步{slots}）。"
+                             "下次直接说名字就行。")
+        else:
+            self.set_emotion("sweat")
+            self.show_bubble(f"这个存不成技能：{why}")
+        self._reply_parts.append(f"（技能：{item['name'] if item else why}）")
+        self._finish_action()
+
+    def _do_run_skill(self, action: dict):
+        """run_skill 动作：按名字重放技能。缺槽整条不跑，去问一句"""
+        self._run_skill_named(action.get("skill") or action.get("name") or "",
+                              self._current_user_text,
+                              extra=action.get("values") or {})
+        self._finish_action()
+
+    def _run_skill_named(self, name: str, utterance: str,
+                         extra=None, speak: bool = True) -> bool:
+        """找到技能、抠出参数、把步骤插进队列 → 成没成（说没说由调用方决定）"""
+        skill = self.skills.get(name)
+        if not skill:
+            if not speak:
+                return False
+            self.set_emotion("sweat")
+            catalog = self.skills.catalog_text()
+            self.show_bubble(f"没学过「{name}」这个技能。"
+                             + ("我会的：" + catalog if catalog else ""))
+            return False
+        values = skill_store.match_values(utterance, skill["slots"])
+        values.update(extra or {})
+        steps, missing = skill_store.fill(skill, values)
+        if not steps:
+            if speak:
+                self.set_emotion("sweat")
+                self.show_bubble(f"「{skill['name']}」还差"
+                                 f"{'、'.join(missing)}，我不拿上次的值瞎补——"
+                                 f"告诉我再跑。")
+            return False
+        self.skills.mark_used(skill)
+        self.set_emotion("happy")
+        self.show_bubble(f"重放「{skill['name']}」：{len(steps)} 步，"
+                         "这些步骤直接照当初的动作跑，一步都没再问模型。")
+        self._action_queue[:0] = steps
+        self.tasks.log_work("skill", f"重放技能：{skill['name']}")
+        return True
+
+    def _replay_skill(self, text: str) -> bool:
+        """零模型调用直放：这句话里出现了技能名，参数也抠得全，就直接跑"""
+        skill = self.skills.get(text)
+        if not skill:
+            return False
+        norm = normalize_intent(text)
+        if normalize_intent(skill["name"]) not in norm:
+            return False
+        if not self._run_skill_named(skill["name"], text, speak=False):
+            return False                    # 抠不齐：交回正常流程，让模型去问
+        steps, self._action_queue = self._action_queue[:], []
+        self._begin_turn(text)
+        self._action_queue = steps
+        self._busy = True
+        self._run_next_action()
+        return True
+
+    def _show_skills(self):
+        """列出已学会的技能（不经过模型）"""
+        items = self.skills.all()
+        if not items:
+            self.show_bubble("我还没学会任何技能。做成一件事后说「存成技能」就行。")
+            return
+        lines = [f"· {s['name']}（{len(s['steps'])} 步"
+                 f"{'，需要' + '、'.join(s['slots']) if s['slots'] else ''}）"
+                 for s in items]
+        used = sum(int(s.get("used", 0)) for s in items)
+        self.show_card("🎯 我学会的技能", "\n".join(lines),
+                       f"共 {len(items)} 条，用过 {used} 次")
 
     # ============================================================
     # 搜索应用动作
@@ -1257,17 +1622,13 @@ class Framework(QObject):
         message = doc_editor.build_edit_message(edit["kind"], edit["spec"],
                                                 instruction)
         logger.info(f"[Framework] 文件修改: 发送指令 {instruction!r}")
-        self._current_user_text = f"[文件修改] {instruction}"
-        self._reply_parts = []
+        self._begin_turn(f"[文件修改] {instruction}")
         self.memory.add("user", f"[文件修改] "
                         f"{os.path.basename(edit['path'])}：{instruction}")
         self.history_changed.emit()
         self.set_pose("think")
         # 不带历史上下文：改写任务要求模型只盯着原文件内容，避免串味
-        self._ai_worker = AIWorker(message, [], self.personality, parent=self)
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
+        self._start_ai_worker(message, history=[])
 
     # ============================================================
     # 文档生成动作（PPT / Word / Excel）
@@ -1403,12 +1764,9 @@ class Framework(QObject):
             "完整要点；文档分 3 个以上章节、每章 2 段以上；表格给足数据行。"
             "只返回动作，不要解释。）")
         logger.warning(f"[Framework] 文档质量纠错: {kind_label} {reason}")
-        self._ai_worker = AIWorker(
-            message, self.memory.get_context(), self.personality, parent=self,
+        self._start_ai_worker(
+            message,
             facts=self.memory.get_facts_text(), notes=self._notes_text())
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
 
     def _on_doc_done(self, ok: bool, err: str, path: str):
         """文档生成完毕：记录交付 + 卡片反馈保存路径；网页报告自动打开"""
@@ -1672,6 +2030,7 @@ class Framework(QObject):
         self._plan_done = 0
         self._plan_fail_note = ""
         self._plan_auto_plan = False
+        self._begin_turn(f"[计划执行] {'；'.join(plan.get('steps') or [])[:30]}")
         self._update_plan_card()
         self.set_emotion("happy")
         self.show_bubble("好，按计划开干！")
@@ -1684,14 +2043,27 @@ class Framework(QObject):
         else:
             self._plan_next_round()      # 让 AI 从第一步开始执行
 
+    def _clear_plan_transient(self):
+        """统一清理一轮执行产生的瞬时标记。
+
+        以前 _cancel_plan / _abandon_plan / _complete_plan / AI 失败兜底
+        各写一遍复位，漏掉 _suppress_fallback 时，下一轮的普通指令会被
+        当成「计划续轮」而不走意图兜底（说「打开微信」只回一句确认语）。
+        所有退出路径统一调用这里；以后新增状态字段也只需改这一处。
+        """
+        self._plan_round_pending = False
+        self._plan_round_had_actions = False
+        self._suppress_fallback = False
+        self._plan_auto_plan = False
+        self._plan_fail_note = ""
+        self._plan_done = 0
+        self._plan_pending_queue = []
+
     def _cancel_plan(self):
         if self._plan is None:
             return
+        self._clear_plan_transient()
         self._plan = None
-        self._plan_done = 0
-        self._plan_pending_queue = []
-        self._plan_fail_note = ""
-        self._plan_auto_plan = False
         self._action_queue = []
         self._close_plan_card()
         self._busy = False
@@ -1705,13 +2077,11 @@ class Framework(QObject):
         if plan is None:
             return
         done = min(self._plan_done, len(plan["steps"]))
+        self._clear_plan_transient()
         self._plan = None
-        self._plan_done = 0
-        self._plan_pending_queue = []
-        self._plan_fail_note = ""
-        self._plan_auto_plan = False
         self._close_plan_card()
         self._busy = False
+        self._review_effects(offer=False)   # 半途搁置的计划也留一份可撤的账
         if plan.get("status") == "running" and done:
             self.show_bubble(f"先放下手头的计划（推进了 {done}/"
                              f"{len(plan['steps'])} 步），这就办新的事。")
@@ -1720,11 +2090,8 @@ class Framework(QObject):
     def _complete_plan(self):
         plan = self._plan
         steps = plan["steps"] if plan else []
+        self._clear_plan_transient()
         self._plan = None
-        self._plan_done = 0
-        self._plan_pending_queue = []
-        self._plan_fail_note = ""
-        self._plan_auto_plan = False
         self.set_emotion("happy")
         self.show_bubble("计划执行完毕，全部落实！")
         self._reply_parts.append("（计划全部完成）")
@@ -1736,6 +2103,8 @@ class Framework(QObject):
             self._reply_parts = []
         self._busy = False
         self.set_pose("idle")
+        self._review_effects()
+        self._announce_effects()
         if self.plan_card is not None and steps:
             self.plan_card.mark_done()    # 整卡打勾，停留几秒自动关
         logger.info("[Framework] 任务计划: 全部完成")
@@ -1767,14 +2136,10 @@ class Framework(QObject):
         self._suppress_fallback = True   # 计划轮不走关键词兜底，避免误触发工具
         logger.info(f"[Framework] 任务计划: 第 {plan['rounds']} 轮执行"
                     f"（{done}/{len(steps)}）")
-        self._ai_worker = AIWorker(
-            message, self.memory.get_context(), self.personality, parent=self,
+        self._start_ai_worker(
+            message,
             facts=self.memory.get_facts_text(),
-            notes=self._notes_text()
-        )
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
+            notes=self._notes_text(), skills=self.skills.catalog_text())
 
     def _note_plan_failure(self, reason: str):
         """计划执行中某步受阻：记下原因，本轮收口后触发自动重规划"""
@@ -1820,14 +2185,10 @@ class Framework(QObject):
         self._suppress_fallback = True   # 重规划轮不走关键词兜底
         logger.info(f"[Framework] 任务计划: 第 {plan['replans']} 次重规划"
                     f"（{done}/{len(steps)}，原因：{reason}）")
-        self._ai_worker = AIWorker(
-            message, self.memory.get_context(), self.personality, parent=self,
+        self._start_ai_worker(
+            message,
             facts=self.memory.get_facts_text(),
-            notes=self._notes_text()
-        )
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
+            notes=self._notes_text(), skills=self.skills.catalog_text())
 
     # ============================================================
     # 定时提醒 / 待办清单（任务台持久化，重启不丢）
@@ -2031,24 +2392,26 @@ class Framework(QObject):
         self._busy = True
         self._current_user_text = self._current_user_text or ""
         self._suppress_fallback = True      # 别把资料回答再兜底成工具调用
-        self._ai_worker = AIWorker(
+        self._start_ai_worker(
             (f"{self._current_user_text}\n\n（系统提示：检索已完成，"
              f"资料已注入上下文，请基于【检索资料】直接回答上面的问题。）"),
-            self.memory.get_context(), self.personality, parent=self,
             facts=self.memory.get_facts_text(), notes=self._notes_text())
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.failed.connect(self._on_ai_failed)
-        self._ai_worker.start()
 
     def _do_read_doc(self, action: dict):
         """read_doc 动作：读取本机文档文字内容，存入资料缓冲并跟进回答"""
         from framework.doc_editor import extract_content
+        from framework.path_guard import validate_read_path
 
-        path = (action.get("path") or "").strip().strip("\"“”")
-        if not path or not os.path.exists(path):
+        # path 来自模型输出，读到的数据会随下一轮发给第三方 LLM。
+        # 先过白名单：允许的目录、后缀、大小、敏感文件名，默认拒绝。
+        ok, path, reason = validate_read_path(action.get("path"))
+        if not ok:
             self.set_emotion("sweat")
-            self.show_bubble("这个文件不存在，确认一下完整路径？")
-            self._note_plan_failure(f"文件不存在：{path or '（路径为空）'}")
+            if reason == "文件不存在":
+                self.show_bubble("这个文件不存在，确认一下完整路径？")
+            else:
+                self.show_bubble(f"这个文件我不便读取：{reason}。")
+            self._note_plan_failure(f"文件路径被拒绝：{reason}")
             self._finish_action()
             return
         ext = os.path.splitext(path)[1].lower()
@@ -2111,13 +2474,17 @@ class Framework(QObject):
     def _do_analyze_data(self, action: dict):
         """analyze_data 动作：pandas 分析本机表格，结论进资料缓冲、图表走交付卡片"""
         from framework import data_tool
+        from framework.path_guard import validate_read_path
         from framework.utils import human_size
 
-        path = (action.get("path") or "").strip().strip("\"“”")
-        if not path or not os.path.exists(path):
+        ok, path, reason = validate_read_path(action.get("path"))
+        if not ok:
             self.set_emotion("sweat")
-            self.show_bubble("这个表格文件不存在，确认一下完整路径？")
-            self._note_plan_failure(f"文件不存在：{path or '（路径为空）'}")
+            if reason == "文件不存在":
+                self.show_bubble("这个表格文件不存在，确认一下完整路径？")
+            else:
+                self.show_bubble(f"这份表格我不便读取：{reason}。")
+            self._note_plan_failure(f"文件路径被拒绝：{reason}")
             self._finish_action()
             return
         try:
@@ -2252,28 +2619,63 @@ class Framework(QObject):
         self.show_bubble(random.choice(lines))
 
     def shutdown(self):
-        """退出前清理（任何一步失败都不阻断退出）"""
+        """退出前清理（任何一步失败都不阻断退出）。
+
+        以前只收尾 pet / AI 线程 / 视觉线程，看门狗、文档线程、搜索线程、
+        计划卡与所有信号连接都留着；这里统一遍历一遍，避免退出后残留
+        QThread 对象或定时器回调打到已销毁的窗口上。
+        """
         try:
             self.pet.stop()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[Framework] 停止宠物控制器失败: {e}")
+
+        for name in ("_reminder_timer", "_chain_watchdog", "_vision_watchdog"):
+            try:
+                timer = getattr(self, name, None)
+                if timer is not None:
+                    timer.stop()
+            except RuntimeError as e:      # C++ 对象可能已销毁
+                logger.warning(f"[Framework] 停止 {name} 失败: {e}")
+        self._vision_watchdog = None
+
+        # 所有后台线程：断信号 → 请求停止 → 限时等待 → 标记可回收
+        for name in ("_ai_worker", "_doc_worker", "_search_worker",
+                     "_vision_worker", "_chain_watchdog"):
+            try:
+                worker = getattr(self, name, None)
+                if worker is None:
+                    continue
+                for sig_name in ("finished", "failed", "done", "timeout"):
+                    sig = getattr(worker, sig_name, None)
+                    if sig is not None:
+                        try:
+                            sig.disconnect()
+                        except (TypeError, RuntimeError):
+                            pass
+                if hasattr(worker, "stop"):
+                    worker.stop()
+                if hasattr(worker, "isRunning") and worker.isRunning():
+                    worker.wait(1500)
+                if hasattr(worker, "deleteLater"):
+                    worker.deleteLater()
+                setattr(self, name, None)
+            except RuntimeError as e:      # 线程 C++ 对象可能已销毁
+                logger.warning(f"[Framework] 收尾 {name} 失败: {e}")
+                setattr(self, name, None)
+
         try:
-            if self._ai_worker and self._ai_worker.isRunning():
-                self._ai_worker.stop()
-                self._ai_worker.wait(1500)
-        except RuntimeError as e:      # 线程 C++ 对象可能已销毁
-            logger.warning(f"[Framework] 收尾 AI 线程失败: {e}")
+            self._zombie_workers.clear()
+        except AttributeError:
+            pass
+        try:
+            if self.plan_card is not None:
+                self.plan_card.close()
+                self.plan_card = None
+        except RuntimeError as e:
+            logger.warning(f"[Framework] 关闭计划卡失败: {e}")
         try:
             self.memory.save()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[Framework] 保存记忆失败: {e}")
-        try:
-            if self._vision_watchdog is not None:
-                self._vision_watchdog.stop()
-                self._vision_watchdog = None
-            if (self._vision_worker is not None
-                    and self._vision_worker.isRunning()):
-                self._vision_worker.wait(1500)
-        except RuntimeError as e:      # 线程 C++ 对象可能已销毁
-            logger.warning(f"[Framework] 收尾视觉线程失败: {e}")
         logger.info("[Framework] 已关闭")

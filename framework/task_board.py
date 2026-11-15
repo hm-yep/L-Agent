@@ -126,6 +126,47 @@ class TaskBoard:
         logger.info(f"[Tasks] 删除待办: {item['text']}")
         return item
 
+    # ---- 按内容回退（撤销这一步用；序号会随列表变动，只有内容靠得住）----
+    def _todo_index(self, text: str, done: bool) -> int:
+        """最后一条 (内容, 完成状态) 匹配的待办序号（1 起始），没有返回 0。
+
+        从后往前找：回退要撤的是最靠近的那一次改动，不是历史里的同名老条目。
+        """
+        for i in range(len(self.todos) - 1, -1, -1):
+            if self.todos[i]["text"] == text and bool(self.todos[i]["done"]) == done:
+                return i + 1
+        return 0
+
+    def reopen_todo(self, text: str) -> dict | None:
+        """把最近一条同名的已完成待办改回未完成（回退「划掉」这一步）"""
+        index = self._todo_index(text, True)
+        if not index:
+            return None
+        item = self.todos[index - 1]
+        item["done"] = False
+        self.save()
+        logger.info(f"[Tasks] 重新打开待办: {text}")
+        return item
+
+    def remove_todo_by_text(self, text: str) -> dict | None:
+        """删掉最近一条同名的未完成待办（回退「新加待办」这一步）"""
+        index = self._todo_index(text, False)
+        return self.remove_todo(index) if index else None
+
+    def remove_reminder_by_text(self, text: str) -> dict | None:
+        """删掉最近一条同名的提醒（回退「设提醒」这一步）"""
+        for i in range(len(self.reminders) - 1, -1, -1):
+            if self.reminders[i].get("text") == text:
+                return self.remove_reminder(i + 1)
+        return None
+
+    def remove_delivery_by_path(self, path: str) -> dict | None:
+        """删掉指向这个路径的交付记录（回退「生成文件」这一步，只删记录）"""
+        for i in range(len(self.deliveries) - 1, -1, -1):
+            if self.deliveries[i].get("path") == path:
+                return self.remove_delivery(i + 1)
+        return None
+
     def clear_done(self):
         """清掉已完成条目"""
         self.todos = [t for t in self.todos if not t["done"]]

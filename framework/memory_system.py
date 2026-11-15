@@ -163,6 +163,13 @@ class MemorySystem:
             return text
         return None
 
+    def forget_fact_by_text(self, text: str) -> str | None:
+        """按内容删掉一条长期记忆（回退「记住」这一步；序号会动，内容靠得住）"""
+        for i in range(len(self.facts) - 1, -1, -1):
+            if self.facts[i] == text:
+                return self.forget_fact(i)
+        return None
+
     def get_facts_text(self) -> str:
         """长期记忆注入 AI 提示词用；没有时返回空串"""
         return "\n".join(f"- {f}" for f in self.facts)

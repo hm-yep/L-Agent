@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    # 依赖 winreg / ctypes.wintypes / PyQt5 桌面栈，收集阶段需 Windows runner
+    name: tests + contracts + evaluation (windows-latest)
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen   # 无桌面会话下让 Qt 以离屏模式加载
+      PYTHONIOENCODING: utf-8      # 规避 GBK 控制台在打印中文/emoji 断言行时崩溃
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+
+      - name: Install dependencies (real install, no hand-picked list)
+        # 刻意走完整的 requirements 链：以前 CI 手工列包、绕开 requirements.txt，
+        # 导致 PyTorch 这种错误包名永远发现不了。这里让 CI 与用户安装路径一致。
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Syntax check
+        run: python -m compileall -q framework api ui tools tests
+
+      - name: Contract checks (action pool / undo classification / persona / deps)
+        run: python tools/check_contracts.py
+
+      - name: Unit tests
+        run: python -m pytest -q --cov=framework --cov-report=term-missing:skip-covered
+
+      - name: Startup smoke test
+        run: python main.py --selftest
+
+      - name: Integration self-check (157 checks, zero-LLM replay)
+        run: python tools/test_agent_features.py
+
+      - name: Capability evaluation
+        run: python tools/eval_tasks.py

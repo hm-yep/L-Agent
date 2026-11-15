@@ -7,19 +7,30 @@
   - 知识库：共享 framework.rag_client（子进程）
   - 联网搜索：共享 framework.web_search
   - 人设：与桌面版一致的骑士凌零（输出格式不同：桌面走 JSON 动作，网页走纯文本）
+
+安全口径（见 docs/QUICK_START.md 与 .env.example）：
+  - 设置 LINGLING_API_TOKEN 后，所有请求必须带 X-API-Key（或 Bearer）；
+  - 未设置令牌时只接受回环地址请求，避免 0.0.0.0 暴露免鉴权的 /chat、/agent/run；
+  - CORS 用白名单，不再放行任意来源；
+  - 服务端异常只记日志，不把异常原文回显给客户端；
+  - 所有文本/上传/会话都有长度、大小、数量与空闲过期上限。
 """
 
+import importlib.util
 import json
+import re
+import secrets
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import (Depends, FastAPI, File, Form, Header, HTTPException,
+                     Request, UploadFile)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -34,27 +45,117 @@ from framework.memory_system import MemorySystem
 from framework.task_board import TaskBoard
 
 
-app = FastAPI(title="凌零 · 智能体服务", version="1.2.0")
+_GENERIC_500 = "处理失败，详见服务端日志"
+_SID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+# ---------------- 访问控制 ----------------
+def _client_host(request: Request) -> str:
+    return (request.client.host if request.client else "") or ""
+
+
+def require_access(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    """全局依赖：有令牌就验令牌；没令牌就只允许本机访问。
+
+    Starlette TestClient 的 client.host 是 "testclient"，把它一并视为本机，
+    否则所有接口测试都得先伪造令牌（测试覆盖反而会下降）。
+    """
+    token = config.API_AUTH_TOKEN
+    if token:
+        supplied = x_api_key or ""
+        if not supplied and authorization \
+                and authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+        if not supplied or not secrets.compare_digest(supplied, token):
+            raise HTTPException(401, "无效的访问令牌")
+        return
+    if _client_host(request) not in _LOOPBACK_HOSTS:
+        raise HTTPException(
+            403, "未配置 LINGLING_API_TOKEN：服务仅接受本机回环请求")
+
+
+_origins = [o for o in config.API_ALLOWED_ORIGINS if o and o != "*"]
+if not _origins:
+    _origins = ["http://127.0.0.1:8000"]
+
+app = FastAPI(title="凌零 · 智能体服务", version="1.3.0",
+              dependencies=[Depends(require_access)])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    allow_origins=_origins,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
 
 # 与桌面版共享同一份 JSON 文件
 _memory = MemorySystem()
 _tasks = TaskBoard()
 
-# 会话 sid -> 起始索引（用于从 memory 中截取该会话的上下文）
+# 会话 sid -> (memory 起始索引, 最后访问时间)
 _sessions: dict = {}
+
+# RAG 是可选依赖，health 要如实反映，不能恒为 True
+_RAG_AVAILABLE = importlib.util.find_spec("langchain_chroma") is not None
+
+
+def _check_sid(sid: Optional[str]) -> str:
+    if sid is not None and not _SID_RE.match(sid):
+        raise HTTPException(400, "session_id 格式不合法")
+    return sid or ""
+
+
+def _check_language(language: str) -> str:
+    if not re.fullmatch(r"[A-Za-z]{0,8}", language or ""):
+        raise HTTPException(400, "language 参数不合法")
+    return language
+
+
+def _require_rag():
+    if not _RAG_AVAILABLE:
+        raise HTTPException(
+            503, "知识库依赖未安装：pip install -r requirements-rag.txt")
+
+
+def _read_upload_sync(file: UploadFile, limit: int) -> bytes:
+    data = file.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, "上传文件过大")
+    return data
+
+
+async def _read_upload_async(file: UploadFile, limit: int) -> bytes:
+    data = await file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, "上传文件过大")
+    return data
+
+
+def _prune_sessions():
+    """清掉过期与超限会话，防止伪造 sid 让内存无限增长。"""
+    now = time.time()
+    for sid, (_, last_seen) in list(_sessions.items()):
+        if now - last_seen > config.API_SESSION_TTL_SEC:
+            _sessions.pop(sid, None)
+    overflow = len(_sessions) - config.API_MAX_SESSIONS
+    if overflow > 0:
+        oldest = sorted(_sessions.items(), key=lambda kv: kv[1][1])[:overflow]
+        for sid, _ in oldest:
+            _sessions.pop(sid, None)
 
 
 # ---------------- 请求/响应模型 ----------------
 class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
+    message: str = Field(..., min_length=1,
+                         max_length=config.API_MAX_MESSAGE_CHARS)
+    session_id: Optional[str] = Field(None, max_length=64)
     use_rag: bool = False
     use_search: bool = False
-    top_k: int = 3
+    top_k: int = Field(3, ge=1, le=10)
 
 
 class ChatResponse(BaseModel):
@@ -65,8 +166,8 @@ class ChatResponse(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    text: str
-    source: str = "manual"
+    text: str = Field(..., min_length=1, max_length=200_000)
+    source: str = Field("manual", max_length=64)
 
 
 class IngestResponse(BaseModel):
@@ -76,8 +177,8 @@ class IngestResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str
-    count: int = 5
+    query: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(5, ge=1, le=10)
 
 
 class VoiceResponse(BaseModel):
@@ -86,8 +187,9 @@ class VoiceResponse(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
-    task: str
-    session_id: Optional[str] = None
+    task: str = Field(..., min_length=1,
+                      max_length=config.API_MAX_TASK_CHARS)
+    session_id: Optional[str] = Field(None, max_length=64)
 
 
 class AgentRunResponse(BaseModel):
@@ -100,7 +202,7 @@ class AgentRunResponse(BaseModel):
 
 
 class TodoItem(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=500)
 
 
 # ---------------- LLM 调用 ----------------
@@ -172,6 +274,7 @@ def agent_chat(message: str, history: list, use_rag: bool,
 
     rag_context = ""
     if use_rag:
+        _require_rag()
         try:
             hits = rag_client.search(message, top_k=top_k)
             if hits:
@@ -181,9 +284,12 @@ def agent_chat(message: str, history: list, use_rag: bool,
                                 "snippet": (h.get("content") or "")[:120]}
                                for h in hits]
                 logger.info(f"[API] RAG 命中 {len(hits)} 条")
+        except HTTPException:
+            raise
         except Exception as e:                  # noqa: BLE001
             logger.warning(f"[API] RAG 检索失败: {e}")
-            references.append({"type": "rag_error", "message": str(e)})
+            references.append({"type": "rag_error",
+                               "message": "知识库暂时不可用"})
 
     search_context = ""
     if use_search:
@@ -204,9 +310,10 @@ def agent_chat(message: str, history: list, use_rag: bool,
                 references.append({"type": "search_warn",
                                    "reason": gate.get("reason", "结果不相关")})
                 logger.warning(f"[API] 搜索质量不达标: {gate.get('reason')}")
-        except Exception as e:                  # noqa: BLE001
+        except Exception:                      # noqa: BLE001
             logger.exception("[API] 搜索失败")
-            references.append({"type": "search_error", "message": str(e)})
+            references.append({"type": "search_error",
+                               "message": "联网检索暂时不可用"})
 
     user_prompt = message
     if rag_context:
@@ -224,12 +331,13 @@ def agent_chat(message: str, history: list, use_rag: bool,
 
 def _get_history(sid: str) -> list:
     """从共享 MemorySystem 里取该会话的上下文。"""
-    start = _sessions.get(sid)
-    if start is None:
-        # 新会话：起点 = 当前 memory 长度
-        start = len(_memory.history)
-        _sessions[sid] = start
-    return list(_memory.history[start:])
+    _prune_sessions()
+    now = time.time()
+    rec = _sessions.get(sid)
+    if rec is None:
+        rec = (len(_memory.history), now)
+    _sessions[sid] = (rec[0], now)
+    return list(_memory.history[rec[0]:])
 
 
 def _record(sid: str, user_text: str, reply: str):
@@ -237,7 +345,10 @@ def _record(sid: str, user_text: str, reply: str):
     _memory.add("user", user_text)
     _memory.add("assistant", reply)
     if sid not in _sessions:
-        _sessions[sid] = max(0, len(_memory.history) - 2)
+        _sessions[sid] = (max(0, len(_memory.history) - 2), time.time())
+    else:
+        start, _ = _sessions[sid]
+        _sessions[sid] = (start, time.time())
 
 
 # ---------------- 路由 ----------------
@@ -252,7 +363,8 @@ async def index():
 @app.get("/health")
 async def health():
     return {"status": "ok", "ts": int(time.time()),
-            "rag_enabled": True,
+            "rag_available": _RAG_AVAILABLE,
+            "auth_required": bool(config.API_AUTH_TOKEN),
             "memory_count": len(_memory.history),
             "todos_count": len(_tasks.open_todos()),
             "search_key_configured": bool(config.WEBSEARCH_API_KEY)}
@@ -261,6 +373,7 @@ async def health():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     t0 = time.time()
+    _check_sid(req.session_id)
     sid = req.session_id or f"s_{int(time.time()*1000)}"
     history = _get_history(sid)
 
@@ -269,9 +382,9 @@ async def chat(req: ChatRequest):
                                  req.use_search, req.top_k)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:                          # noqa: BLE001
         logger.exception("[API] chat 失败")
-        raise HTTPException(500, f"处理失败: {type(e).__name__}: {e}")
+        raise HTTPException(500, _GENERIC_500)
 
     _record(sid, req.message, reply)
     return ChatResponse(session_id=sid, reply=reply, references=refs,
@@ -280,30 +393,38 @@ async def chat(req: ChatRequest):
 
 @app.post("/ingest/text", response_model=IngestResponse)
 async def ingest_text(req: IngestRequest):
+    _require_rag()
     if not req.text.strip():
         raise HTTPException(400, "text 不能为空")
     try:
         n = rag_client.add_text(req.text, source=req.source)
         total = rag_client.count()
-    except Exception as e:  # noqa: BLE001
+    except Exception:                          # noqa: BLE001
         logger.exception("[API] ingest_text 失败")
-        raise HTTPException(500, f"入库失败: {type(e).__name__}: {e}")
+        raise HTTPException(500, "入库失败，详见服务端日志")
     return IngestResponse(ok=True, chunks=n, total=total)
 
 
 @app.post("/ingest/file", response_model=IngestResponse)
 async def ingest_file(file: UploadFile = File(...)):
+    _require_rag()
     tmp_dir = Path("./data/uploads")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    dst = tmp_dir / (file.filename or "upload.bin")
+    safe_name = Path(file.filename or "").name  # 丢掉 ../ 与绝对路径，只留纯文件名
+    if not safe_name:
+        safe_name = "upload.bin"
+    dst = (tmp_dir / safe_name).resolve()
+    if dst.parent != tmp_dir.resolve():  # 兜底：解析后必须仍落在 uploads 内
+        raise HTTPException(400, "非法文件名")
+    data = await _read_upload_async(file, config.API_MAX_UPLOAD_BYTES)
     with open(dst, "wb") as f:
-        f.write(await file.read())
+        f.write(data)
     try:
         n = rag_client.add_file(str(dst))
         total = rag_client.count()
-    except Exception as e:  # noqa: BLE001
+    except Exception:                          # noqa: BLE001
         logger.exception("[API] ingest_file 失败")
-        raise HTTPException(400, f"入库失败: {type(e).__name__}: {e}")
+        raise HTTPException(400, "入库失败，详见服务端日志")
     return IngestResponse(ok=True, chunks=n, total=total)
 
 
@@ -311,8 +432,9 @@ async def ingest_file(file: UploadFile = File(...)):
 async def search_endpoint(req: SearchRequest):
     try:
         results = web_search(req.query, count=req.count)
-    except Exception as e:
-        raise HTTPException(502, f"搜索失败: {e}")
+    except Exception:                          # noqa: BLE001
+        logger.exception("[API] 搜索失败")
+        raise HTTPException(502, "搜索服务暂时不可用，详见服务端日志")
     return {"query": req.query, "results": results}
 
 
@@ -322,21 +444,23 @@ def voice_to_text(
     language: str = Form("zh"),
 ):
     t0 = time.time()
-    logger.info(f"[API] 收到语音请求 /voice（{file.filename}）")
+    language = _check_language(language)
+    logger.info("[API] 收到语音请求 /voice")
     try:
         from framework.voice_input import transcribe_bytes
-    except ImportError as e:
-        raise HTTPException(500, f"语音模块不可用: {e}")
+    except ImportError:
+        raise HTTPException(
+            503, "语音依赖未安装：pip install -r requirements-voice.txt")
 
     suffix = Path(file.filename or "voice.wav").suffix or ".wav"
-    data = file.file.read()
+    data = _read_upload_sync(file, config.API_MAX_UPLOAD_BYTES)
     if not data:
         raise HTTPException(400, "音频文件为空")
     try:
         text = transcribe_bytes(data, suffix=suffix, language=language)
-    except Exception as e:
+    except Exception:                          # noqa: BLE001
         logger.exception("[API] 语音识别失败")
-        raise HTTPException(500, f"识别失败: {type(e).__name__}: {e}")
+        raise HTTPException(500, "语音识别失败，详见服务端日志")
     return VoiceResponse(text=text,
                          elapsed_ms=int((time.time() - t0) * 1000))
 
@@ -350,26 +474,36 @@ def voice_chat(
     language: str = Form("zh"),
 ):
     t0 = time.time()
-    logger.info(f"[API] 收到语音请求 /voice/chat（{file.filename}）")
+    language = _check_language(language)
+    _check_sid(session_id)
+    logger.info("[API] 收到语音请求 /voice/chat")
     try:
         from framework.voice_input import transcribe_bytes
-    except ImportError as e:
-        raise HTTPException(500, f"语音模块不可用: {e}")
+    except ImportError:
+        raise HTTPException(
+            503, "语音依赖未安装：pip install -r requirements-voice.txt")
 
     suffix = Path(file.filename or "voice.wav").suffix or ".wav"
-    data = file.file.read()
+    data = _read_upload_sync(file, config.API_MAX_UPLOAD_BYTES)
     if not data:
         raise HTTPException(400, "音频文件为空")
     try:
         text = transcribe_bytes(data, suffix=suffix, language=language)
-    except Exception as e:
-        raise HTTPException(500, f"识别失败: {type(e).__name__}: {e}")
+    except Exception:                          # noqa: BLE001
+        logger.exception("[API] 语音识别失败")
+        raise HTTPException(500, "语音识别失败，详见服务端日志")
     if not text:
         raise HTTPException(400, "没有识别到语音内容")
 
     sid = session_id or f"s_{int(time.time()*1000)}"
     history = _get_history(sid)
-    reply, refs = agent_chat(text, history, use_rag, use_search, 3)
+    try:
+        reply, refs = agent_chat(text, history, use_rag, use_search, 3)
+    except HTTPException:
+        raise
+    except Exception:                          # noqa: BLE001
+        logger.exception("[API] voice_chat 对话失败")
+        raise HTTPException(500, _GENERIC_500)
     _record(sid, f"[语音] {text}", reply)
 
     return ChatResponse(
@@ -384,12 +518,13 @@ def voice_chat(
 async def agent_run(req: AgentRunRequest):
     from framework.multi_agent import get_orchestrator
     t0 = time.time()
+    _check_sid(req.session_id)
     sid = req.session_id or f"s_{int(time.time()*1000)}"
     try:
         result = get_orchestrator().run(req.task)
-    except Exception as e:
+    except Exception:                          # noqa: BLE001
         logger.exception("[API] 多智能体失败")
-        raise HTTPException(500, f"编排失败: {type(e).__name__}: {e}")
+        raise HTTPException(500, "编排失败，详见服务端日志")
     _memory.add("user", f"[多智能体] {req.task}")
     _memory.add("assistant",
                 json.dumps(result.get("results", []),
@@ -405,8 +540,8 @@ async def agent_run(req: AgentRunRequest):
 @app.get("/tasks/todos")
 async def list_todos():
     """查看当前未完成待办"""
-    return {"todos": [t["text"] for t in _tasks.open_todos()],
-            "total": len(_tasks.open_todos())}
+    items = _tasks.open_todos()
+    return {"todos": [t["text"] for t in items], "total": len(items)}
 
 
 @app.post("/tasks/todos")
@@ -422,6 +557,8 @@ async def add_todo(item: TodoItem):
 @app.delete("/tasks/todos/{index}")
 async def delete_todo(index: int):
     """删除第 index 条待办（1 起始）"""
+    if index < 1:
+        raise HTTPException(400, "index 必须 >= 1")
     item = _tasks.remove_todo(index)
     if item is None:
         raise HTTPException(404, f"待办 {index} 不存在")
@@ -438,10 +575,12 @@ async def list_reminders():
 # ---------------- 会话管理 ----------------
 @app.get("/sessions/{sid}")
 async def get_session(sid: str):
+    _check_sid(sid)
     return {"session_id": sid, "history": _get_history(sid)}
 
 
 @app.delete("/sessions/{sid}")
 async def clear_session(sid: str):
+    _check_sid(sid)
     _sessions.pop(sid, None)
     return {"ok": True}

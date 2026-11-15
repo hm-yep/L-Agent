@@ -653,5 +653,116 @@ check("analyze_data 缺文件友好", any("表格文件不存在" in b for b in 
 _pump(1600)
 
 # ============================================================
+section("九、后悔药与技能层（全程零模型调用）")
+# ============================================================
+import framework.core as core_mod
+from framework import effect_journal
+from framework.action_parser import VALID_ACTIONS
+
+cov = effect_journal.coverage(VALID_ACTIONS)
+check("每个动作的可逆性都归了类（没有未知项）", cov["unknown"] == [],
+      str(cov["unknown"]))
+check("撤销动作自己不再记账（防「撤销撤销」）", cov["undo"] == ["undo_last"],
+      str(cov["undo"]))
+
+# 数据隔离：技能与记忆写到临时文件，自测不许学会真技能、也不留真记忆
+fw.memory._file = os.path.join(tempfile.gettempdir(), "pet_test_memory.json")
+fw.memory.facts, fw.memory.history = [], []
+fw.skills.path = os.path.join(tempfile.gettempdir(), "pet_test_skills.json")
+fw.skills.items = []
+
+_saved_ai = core_mod.AIWorker
+
+
+def _boom(*a, **k):
+    raise AssertionError("快路径请了模型")
+
+
+core_mod.AIWorker = _boom
+try:
+    bubbles.clear()
+    fw._begin_turn("加一条待办：后悔药自测")
+    fw._action_queue = [{"action": "todo_add", "text": "后悔药自测"},
+                        {"action": "remember", "fact": "后悔药自测事实"}]
+    fw._busy = True
+    fw._run_next_action()
+    _pump(1400)
+    items = (fw._last_undo or {}).get("items", [])
+    check("两个改动都进了差集账", len(items) == 2, str(items))
+    todo_item = next((i for i in items if i["kind"] == "todo_add"), {})
+    check("待办标签是原文本（不是元组字符串）",
+          "后悔药自测" in todo_item.get("label", "")
+          and "(" not in todo_item.get("label", ""),
+          todo_item.get("label", ""))
+    check("如实播报「这一轮改了 2 件事，都能撤」",
+          any("都能撤" in b for b in bubbles), str(bubbles[-3:]))
+
+    bubbles.clear()
+    fw.send_command("撤销")
+    _pump(900)
+    check("撤销把待办真删了",
+          not any(t["text"] == "后悔药自测" for t in fw.tasks.todos))
+    check("撤销把长期记忆真忘了", "后悔药自测事实" not in fw.memory.facts)
+    check("撤销只给一次（账已销）", fw._last_undo is None)
+    check("撤销报了明细", any("撤销" in b and "退回" in b for b in bubbles),
+          str(bubbles))
+
+    check("撤销那轮没冲掉可存的轨迹", len(fw._last_turn_actions) == 2,
+          str(fw._last_turn_actions))
+    bubbles.clear()
+    fw.send_command("存成技能")
+    _pump(700)
+    skills = fw.skills.all()
+    check("一句话就学会了技能（没走模型）", len(skills) == 1, str(skills))
+    name = skills[0]["name"] if skills else ""
+    check("技能名取自那件事，不是「存成技能」",
+          bool(name) and name != "存成技能", name)
+    check("字面量抽成了槽位", skills and skills[0]["slots"] == ["主题", "主题2"],
+          str(skills and skills[0]["slots"]))
+
+    bubbles.clear()
+    fw.send_command(f"{name}「复跑待办」「复跑事实」")
+    _pump(1400)
+    check("一句话直放：待办跑出来了",
+          any(t["text"] == "复跑待办" for t in fw.tasks.todos))
+    check("一句话直放：事实也记住了", "复跑事实" in fw.memory.facts)
+    check("直放明说了一步都没再问模型",
+          any("重放" in b and "没再问模型" in b for b in bubbles),
+          str(bubbles[:2]))
+    check("技能用了一次就计数", fw.skills.all()[0]["used"] == 1,
+          str(fw.skills.all()[0]["used"]))
+
+    fw.send_command("撤销")
+    _pump(900)
+    check("重放造出来的东西同样能撤",
+          not any(t["text"] == "复跑待办" for t in fw.tasks.todos)
+          and "复跑事实" not in fw.memory.facts)
+
+    # 只做了一类"撤不回"的动作（这里不真开程序，只喂轨迹给记账层）：
+    # 差集是空的，账却必须还在。否则用户听到的是含糊的"我没改动什么"，
+    # 而不是"这一步撤不回"——漏报撤不回归零，才是这层的及格线。
+    bubbles.clear()
+    fw._begin_turn("打开记事本")
+    fw._turn_actions = [{"action": "open_app", "app": "记事本"}]
+    fw._review_effects(offer=False)
+    undo = fw._last_undo or {}
+    check("没差集但有盲区的轮次照样留账",
+          undo.get("items") == [] and len(undo.get("spots", [])) == 1,
+          str(undo))
+    fw._announce_effects()
+    check("当场明说这一轮有撤不回的",
+          any("撤不回" in b for b in bubbles), str(bubbles))
+    fw._do_undo_last({})
+    _pump(500)
+    check("撤销把撤不回的原因逐条讲了（不是一句「已撤销」）",
+          fw._last_undo is None
+          and any("撤不回" in b for b in bubbles), str(bubbles))
+finally:
+    core_mod.AIWorker = _saved_ai
+    fw.skills.items = []
+    for _p in (fw.skills.path, fw.memory._file):
+        if os.path.exists(_p):
+            os.remove(_p)
+# ============================================================
 print(f"\n{'=' * 60}\n结果: {PASS} 通过 / {FAIL} 失败\n{'=' * 60}")
 sys.exit(1 if FAIL else 0)

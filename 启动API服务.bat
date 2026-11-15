@@ -17,7 +17,7 @@ if not defined RUNNER (
 )
 if not defined RUNNER (
     echo [ERROR] No usable Python with PyQt5 found.
-    echo Run: python -m pip install PyQt5 requests
+    echo Run: python -m pip install -r requirements.txt
     pause
     exit /b 1
 )
@@ -25,6 +25,7 @@ if not defined RUNNER (
 echo Starting LingLing API mode ...
 echo Web UI: http://127.0.0.1:8000/
 echo Keep the desktop pet window open while testing the web page.
+echo If the API is exposed outside this machine, set LINGLING_API_TOKEN first.
 %RUNNER% main.py --api
 
 echo.

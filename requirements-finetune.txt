@@ -1,0 +1,10 @@
+# 可选：LoRA 微调实验（finetune/ 下的独立训练脚本，未接入产品推理链路）
+#   pip install -r requirements-finetune.txt
+# 注意：正确包名是 torch（旧版 requirements.txt 曾误写成 PyTorch，
+# 那是 PyPI 上的占位包，会导致 pip 无法解析）。无 GPU 时训练不现实。
+torch>=2.0,<3.0
+peft>=0.10,<0.20
+transformers>=4.40,<5.0
+datasets>=2.18,<4.0
+accelerate>=0.29,<2.0
+PyYAML>=6.0,<7

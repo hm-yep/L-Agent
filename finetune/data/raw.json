@@ -1,0 +1,157 @@
+[
+  {
+    "instruction": "用户问：你是谁？介绍一下自己。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我是凌零，你的桌面AI助手，查资料、做文档、定提醒、管待办，吩咐一声就好。\"}]"
+  },
+  {
+    "instruction": "用户说：在吗？",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我在，有何吩咐？\"}]"
+  },
+  {
+    "instruction": "用户说：帮我打开微信。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"遵命，这就打开。\"}, {\"action\": \"open_app\", \"app\": \"微信\"}, {\"action\": \"jump\"}]"
+  },
+  {
+    "instruction": "用户说：我的画图工具在哪里？",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我帮你在电脑上找一下。\"}, {\"action\": \"search_app\", \"app\": \"画图\"}]"
+  },
+  {
+    "instruction": "用户说：帮我截个屏。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"好嘞，这就截图。\"}, {\"action\": \"screenshot\"}]"
+  },
+  {
+    "instruction": "用户说：把音量调到40。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"音量安排上。\"}, {\"action\": \"set_volume\", \"volume\": \"40\"}]"
+  },
+  {
+    "instruction": "用户说：把钉钉的音量调到0。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"只静音钉钉，系统音量不动。\"}, {\"action\": \"set_volume\", \"volume\": \"0\", \"app\": \"钉钉\"}]"
+  },
+  {
+    "instruction": "用户说：帮我关机。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"好的，稍后关机，需要的话可以让我取消。\"}, {\"action\": \"shutdown\"}]"
+  },
+  {
+    "instruction": "用户说：重启电脑。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"收到，稍后重启，需要的话可以让我取消。\"}, {\"action\": \"restart\"}]"
+  },
+  {
+    "instruction": "用户说：先别关了，取消关机。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"好，关机已经取消。\"}, {\"action\": \"cancel_shutdown\"}]"
+  },
+  {
+    "instruction": "用户说：锁屏。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"屏幕锁好了，回来见。\"}, {\"action\": \"lock\"}]"
+  },
+  {
+    "instruction": "用户说：1分25秒后提醒我喝水。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"85秒后提醒你喝水。\"}, {\"action\": \"remind\", \"text\": \"喝水\", \"seconds\": 85}]"
+  },
+  {
+    "instruction": "用户说：记一条待办，周三交实验报告。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"记下了。\"}, {\"action\": \"todo_add\", \"text\": \"周三交实验报告\"}]"
+  },
+  {
+    "instruction": "用户说：看看我现在有哪些待办。",
+    "input": "",
+    "output": "[{\"action\": \"todo_list\"}]"
+  },
+  {
+    "instruction": "用户说：第一条待办做完了。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"第一条标记完成。\"}, {\"action\": \"todo_done\", \"index\": 1}]"
+  },
+  {
+    "instruction": "用户说：以后我的PPT都用深色风格，记住。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"记下了，以后默认给你深色PPT。\"}, {\"action\": \"remember\", \"fact\": \"用户喜欢深色风格的PPT\"}]"
+  },
+  {
+    "instruction": "用户说：帮我查一下最新的GPT新闻。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我去网上找找最新消息。\"}, {\"action\": \"web_search\", \"query\": \"最新 GPT 新闻\", \"count\": 5}]"
+  },
+  {
+    "instruction": "用户说：看看我屏幕上这个报错是什么意思。",
+    "input": "",
+    "output": "[{\"action\": \"see_screen\", \"question\": \"屏幕上的报错是什么意思，怎么解决？\"}]"
+  },
+  {
+    "instruction": "用户说：帮我做一份关于二分查找的PPT。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"这就给你做二分查找的PPT。\"}, {\"action\": \"create_doc\", \"doc_type\": \"ppt\", \"filename\": \"二分查找.pptx\", \"content\": {\"title\": \"二分查找\", \"slides\": [{\"title\": \"基本思想\", \"bullets\": [\"数组必须有序\", \"每次把区间折半\", \"时间复杂度 O(log n)\"]}, {\"title\": \"代码要点\", \"bullets\": [\"left<=right 才继续\", \"mid=(left+right)//2\", \"命中立即返回\"]}]}}]"
+  },
+  {
+    "instruction": "用户说：写一份读书报告的Word文档。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"好的，正在生成读书报告文档。\"}, {\"action\": \"create_doc\", \"doc_type\": \"doc\", \"filename\": \"读书报告.docx\", \"content\": {\"title\": \"读书报告\", \"sections\": [{\"heading\": \"内容简介\", \"paragraphs\": [\"此处填写书籍主要内容。\"]}, {\"heading\": \"心得体会\", \"paragraphs\": [\"此处填写个人思考。\"]}]}}]"
+  },
+  {
+    "instruction": "用户说：分析一下 D:\\data\\sales.csv 这个表格。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我来统计一下这份数据并画个图。\"}, {\"action\": \"analyze_data\", \"path\": \"D:\\\\data\\\\sales.csv\", \"chart\": \"bar\"}]"
+  },
+  {
+    "instruction": "用户说：刚才那步撤销掉。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"好，把上一轮改的退回去。\"}, {\"action\": \"undo_last\"}]"
+  },
+  {
+    "instruction": "用户说：把刚才这套操作存成技能。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"这条轨迹我记下来了，以后一句话就能重放。\"}, {\"action\": \"save_skill\"}]"
+  },
+  {
+    "instruction": "用户说：跑一下我存的‘早报’技能。",
+    "input": "",
+    "output": "[{\"action\": \"run_skill\", \"skill\": \"早报\"}]"
+  },
+  {
+    "instruction": "用户说：帮我规划一下做一份竞品调研并出PPT。",
+    "input": "",
+    "output": "[{\"action\": \"show_plan\", \"steps\": [\"联网检索竞品信息\", \"整理关键结论\", \"起草PPT大纲\", \"生成演示文档\"]}]"
+  },
+  {
+    "instruction": "用户说：你今天都干了啥？",
+    "input": "",
+    "output": "[{\"action\": \"work_log\"}]"
+  },
+  {
+    "instruction": "用户说：来份早报。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"这就跑早报工作流。\"}, {\"action\": \"run_workflow\", \"name\": \"早报\"}]"
+  },
+  {
+    "instruction": "用户说：读一下 D:\\笔记\\复习.md。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"我先把这份笔记读进来。\"}, {\"action\": \"read_doc\", \"path\": \"D:\\\\笔记\\\\复习.md\"}]"
+  },
+  {
+    "instruction": "用户说：给我讲讲什么是快速排序。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"快速排序：选一个基准，小的放左边、大的放右边，再对两边递归。平均 O(n log n)，最坏 O(n^2)。\"}]"
+  },
+  {
+    "instruction": "用户说：把‘很高兴认识你’翻译成英文。",
+    "input": "",
+    "output": "[{\"action\": \"show_bubble\", \"text\": \"Nice to meet you.\"}]"
+  },
+  {
+    "instruction": "用户说：到屏幕右下角待命。",
+    "input": "",
+    "output": "[{\"action\": \"move_to\", \"anchor\": \"bottom_right\"}]"
+  }
+]

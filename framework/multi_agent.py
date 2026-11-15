@@ -17,6 +17,7 @@ import time
 
 from framework import config
 from framework.utils import logger
+from framework.prompt_blocks import PERSONA_BRIEF
 
 _MAX_ROUNDS = 1
 _MAX_LLM_CALLS = 32     # 两阶段执行后单步消耗 2~3 次，24 不够用
@@ -41,7 +42,7 @@ _LIMIT_MARKERS = (
 )
 
 
-PLANNER_PROMPT = """你是 Planner，负责把用户任务拆成 3~6 个可执行步骤。
+PLANNER_PROMPT = PERSONA_BRIEF + """你是 Planner，负责把用户任务拆成 3~6 个可执行步骤。
 
 【硬性要求】
 - 必须拆成 3~6 个步骤，【不允许】只拆 1~2 步
@@ -69,7 +70,7 @@ PLANNER_PROMPT = """你是 Planner，负责把用户任务拆成 3~6 个可执�
 不要输出 JSON，不要加标题，只输出步骤清单。
 """
 
-EXECUTOR_PROMPT = """你是 Executor，负责执行一步任务。
+EXECUTOR_PROMPT = PERSONA_BRIEF + """你是 Executor，负责执行一步任务。
 
 严格按下面三行输出：
 RESULT: <这一步的具体产出>
@@ -99,7 +100,7 @@ RESULT 里【绝对不能】出现这些字样：
 - 不要输出 JSON
 """
 
-EXECUTOR_REWRITE_PROMPT = """你是 Executor。用户已经帮你联网检索到了资料，
+EXECUTOR_REWRITE_PROMPT = PERSONA_BRIEF + """你是 Executor。用户已经帮你联网检索到了资料，
 现在你【必须】基于这些资料写出具体结果，绝对不能再复述任务要求。
 
 严格按下面三行输出：
@@ -116,7 +117,7 @@ QUERY: NONE
 绝不能整段说"需要检索"。
 """
 
-REVIEWER_PROMPT = """你是 Reviewer，审查一步的执行结果。
+REVIEWER_PROMPT = PERSONA_BRIEF + """你是 Reviewer，审查一步的执行结果。
 
 严格按下面三行输出：
 PASS: <YES 或 NO>

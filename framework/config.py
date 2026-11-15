@@ -34,10 +34,12 @@ USER_SETTINGS_FILE = "user_settings.json"
 # 安全白名单：只允许打开白名单内的应用
 # 键为识别名（支持模糊匹配），值为 exe 名称列表
 # ============================================================
-# 放行所有应用（09-12 用户要求）：True 时不再做白名单拦截，
-# 桌面快捷方式/开始菜单/注册表里能搜到的程序都能打开。
-# 白名单表仍保留，作为"应用名 -> exe 文件名"的搜索提示用。
-ALLOW_ALL_APPS = True
+# 是否放行白名单之外的任意程序。
+# 默认关闭（安全默认）：open_app 只允许 APP_WHITELIST 命中的程序。
+# 确实需要"搜到什么就开什么"时，显式设置环境变量 LINGLING_ALLOW_ALL_APPS=1，
+# 或在设置界面开启；白名单表同时保留，作为"应用名 -> exe 文件名"的搜索提示。
+ALLOW_ALL_APPS = os.environ.get("LINGLING_ALLOW_ALL_APPS", "0").strip() \
+    in ("1", "true", "yes", "on")
 
 APP_WHITELIST = {
     "微信":     ["wechat.exe", "weixin.exe"],
@@ -276,6 +278,35 @@ PLAN_CONFIRM_WORDS = ("确认", "开始执行", "执行吧", "开始吧", "没�
                       "计划可以", "可以了")
 
 # ============================================================
+# 后悔药：一轮任务的效果记账与逐项回退（纯确定性，撤销过程不调模型）
+# ============================================================
+UNDO_ENABLED = True             # 总开关：False 时不记账，undo_last 如实说没记
+UNDO_DELETE_FILES = True        # 允许回退时删掉本轮自己生成的文档/图表
+UNDO_DELETE_MAX_BYTES = 50 * 1024 * 1024   # 只删不超过这个大小的本轮新文件
+UNDO_FILE_EXTS = (".pptx", ".docx", ".xlsx", ".png", ".jpg", ".jpeg", ".html")
+UNDO_MAX_ITEMS = 20             # 一次最多回退几项（超出交还用户手工处理）
+# 短指令直连：这几句话不经过模型当场执行（API 欠费时照样能撤销、能存技能）
+SHORT_CMD_MAX_LEN = 14          # 超过这个长度就不算"一句指令"，交回模型当任务
+UNDO_WORDS = ("撤销", "撤回", "恢复原样", "undo")
+SKILL_SAVE_WORDS = ("存成技能", "记成技能", "学会这个", "记住这套",
+                    "以后就这么做", "存下来")
+SKILL_LIST_WORDS = ("技能列表", "你会什么技能", "有哪些技能", "学过什么")
+
+# ============================================================
+# 技能层：把做成过的动作序列存成可重放技能（一次学会，下次零规划）
+# ============================================================
+SKILLS_FILE = "skills.json"
+MAX_SKILLS = 30                 # 技能条数上限（超出丢最老的）
+SKILL_MIN_STEPS = 2             # 少于此步数不提议存技能（一步的事不值得记）
+SKILL_MAX_STEPS = 12            # 单个技能最多几步（超出说明这一轮太杂，不是技能）
+SKILL_NAME_MAX = 24             # 技能名长度上限
+SKILL_OFFER_COOLDOWN_SEC = 180  # 两次「要存成技能吗」的最小间隔（不烦人）
+SKILL_SLOT_MAX = 4              # 单个技能最多几个槽位（超出说明抽象得不好）
+# 一句话直放的长度门限：比短指令宽，因为技能名可能就是当初那句长任务。
+# 再宽就危险了——长句子是该让模型读的任务，不是能逐字对上号的命令。
+SKILL_REPLAY_MAX_LEN = 40
+
+# ============================================================
 # 工作流模板：一键触发的多步任务编排（智能体"工作流编排"能力）。
 # run_workflow 动作 / 右键菜单都能启动；command 会作为一条新任务
 # 走完整链路：AI 拟计划 -> 计划卡确认 -> 调工具逐步执行 -> 交付。
@@ -327,6 +358,25 @@ SOUND_ENABLED = True          # 音效总开关（设置中可改）
 SOUND_VOLUME = 0.6            # 音量 0.0 ~ 1.0
 
 # ============================================================
+# API 服务安全（环境变量配置；默认值是"只服务本机"的最小暴露面）
+# ============================================================
+# 设置后所有请求必须带 X-API-Key: <token>（或 Authorization: Bearer <token>）。
+# 未设置时服务只接受回环地址（127.0.0.1 / ::1）的请求，避免 0.0.0.0 暴露
+# 时把免鉴权的 /chat、/agent/run 直接放到局域网上。
+API_AUTH_TOKEN = os.environ.get("LINGLING_API_TOKEN", "")
+API_ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "LINGLING_API_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000").split(",")
+    if o.strip()
+]
+API_MAX_MESSAGE_CHARS = 4000        # 单条对话/任务文本长度上限
+API_MAX_TASK_CHARS = 2000           # /agent/run 任务描述长度上限
+API_MAX_UPLOAD_BYTES = 20 * 1024 * 1024   # 上传文件 20 MB 上限
+API_SESSION_TTL_SEC = 3600          # 会话空闲过期时间
+API_MAX_SESSIONS = 512              # 会话表上限（防伪造 sid 无限增长）
+
+# ============================================================
 # 用户设置持久化（%APPDATA%\DesktopPet\user_settings.json）
 # 设置界面填写的 API Key / 接口地址 / 模型 / 性格 / 音效 都会存到这里。
 # 固定放用户目录（不放 exe 旁边）：exe 被挪到别的文件夹、直接在压缩包里
@@ -359,15 +409,35 @@ def _user_settings_path() -> str:
 
 
 def save_user_settings(**kwargs) -> None:
-    """增量保存用户设置到 JSON"""
+    """增量保存用户设置到 JSON（原子写 + 收紧权限）。
+
+    这个文件里含用户填写的 API Key，因此：
+      * 先写临时文件再 os.replace，避免半写导致设置损坏；
+      * POSIX 下 chmod 600，仅属主可读写；
+      * Windows 的 ACL 不能靠 chmod 保证，需要更强隔离时请改用
+        环境变量（DEEPSEEK_API_KEY 等），不要落盘。
+    """
     data = load_user_settings()
     data.update(kwargs)
+    path = _user_settings_path()
+    tmp = path + ".tmp"
     try:
-        with open(_user_settings_path(), "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     except OSError as e:
         from framework.utils import logger
         logger.warning(f"[Config] 用户设置保存失败: {e}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def load_user_settings() -> dict:

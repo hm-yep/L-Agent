@@ -9,3 +9,17 @@ build/
 *.pyc
 *.log
 .DS_Store
+
+# 真实密钥：只提交 .env.example，绝不提交 .env
+.env
+.env.*
+!.env.example
+
+# 覆盖率与本地工具产物
+.coverage
+.coverage.*
+htmlcov/
+eval_result.json
+
+# WorkBuddy 会话数据（本地工作记录，不属于产品代码）
+.workbuddy/
