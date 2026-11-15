@@ -76,8 +76,8 @@ def _avatar(kind: str, size: int = 22) -> QPixmap:
 
 
 # 输入条尺寸 / 输入行高度
-INPUT_WIDTH = 610
-INPUT_ROW_HEIGHT = 52
+INPUT_WIDTH = 560
+INPUT_ROW_HEIGHT = 38
 # 记录面板尺寸（09-19 再扩大：长宽约为最初的 1.5 倍，字体同步放大，
 # 长回复/代码完整显示，靠列表滚动查看）
 PANEL_WIDTH = 840
@@ -127,8 +127,8 @@ class InputDialog(QWidget):
         self._panel = QWidget(self)
         self._panel.setObjectName("inputPanel")
         row = QHBoxLayout(self._panel)
-        row.setContentsMargins(14, 8, 10, 8)
-        row.setSpacing(8)
+        row.setContentsMargins(10, 6, 8, 6)
+        row.setSpacing(6)
 
         # 「历史记录」按钮：打开聊天记录面板（与输入框等高，竖边加长）
         self._history_btn = QPushButton("历史记录", self._panel)
@@ -174,16 +174,16 @@ class InputDialog(QWidget):
         row.addWidget(self._workspace_btn)
 
         wrapper = QVBoxLayout(self)
-        wrapper.setContentsMargins(8, 8, 8, 8)
+        wrapper.setContentsMargins(6, 6, 6, 6)
         wrapper.addWidget(self._panel)
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(80, 60, 40, 90))
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(80, 60, 40, 80))
         self._panel.setGraphicsEffect(shadow)
 
-        self.setFixedSize(INPUT_WIDTH, 84)
+        self.setFixedSize(INPUT_WIDTH, 60)
 
     # ============================================================
     # 显示 / 跟随

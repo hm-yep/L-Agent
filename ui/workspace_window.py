@@ -32,7 +32,7 @@ from PyQt5.QtGui import QDesktopServices
 
 from .icons import icon
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QComboBox, QFrame,
+    QAbstractItemView, QApplication, QButtonGroup, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QPushButton, QScrollArea,
     QStackedWidget, QStatusBar, QTableWidget, QTableWidgetItem,
@@ -146,18 +146,6 @@ QLineEdit#commandInput {
     background: transparent; color: __TEXT__; border: none;
     padding: 2px 4px; font-size: __FS_BODY__px;
 }
-QComboBox#cmdCombo {
-    background: transparent; color: __MUTED__; border: none;
-    border-radius: 6px; padding: 5px 8px; font-size: __FS_MICRO__px;
-}
-QComboBox#cmdCombo:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
-QComboBox#cmdCombo QAbstractItemView { background: __CARD__; color: __TEXT__;
-                                       font-size: __FS_SMALL__px; }
-QPushButton#chip {
-    background: transparent; color: __MUTED__; border: none;
-    border-radius: 6px; padding: 5px 8px; font-size: __FS_MICRO__px;
-}
-QPushButton#chip:hover { background: __NAV_ACTIVE__; color: __TEXT__; }
 QPushButton#sendRound {
     background: __ACCENT__; color: #FFFFFF; border: none;
     border-radius: 16px; font-size: __FS_BODY__px;
@@ -503,9 +491,15 @@ class WorkspaceWindow(QMainWindow):
             h.addWidget(btn)
         return bar
 
-    # ---------------- 主区底部全局命令栏（对标 WorkBuddy） ----------------
+    # ---------------- 主区底部全局命令栏 ----------------
     def _build_command_bar(self) -> QWidget:
-        """参考图的两层结构：上方大圆角输入框，下方一排小控件。"""
+        """单层命令栏：一个大输入框 + 右侧圆形发送按钮。
+
+        之前这里抄了参考图的一排小控件（分支 / 访问级别 / 模型 / 麦克风 /
+        添加上下文），但它们在本项目里没有对应的真实能力，点了没反应、
+        是纯摆设。现在只保留真正接通的「输入 + 发送」，其余能力（语音、
+        选文件）走桌宠右键菜单或自然语言，不在这里放空壳按钮。
+        """
         bar = QWidget()
         bar.setObjectName("commandBar")
         outer = QVBoxLayout(bar)
@@ -515,74 +509,30 @@ class WorkspaceWindow(QMainWindow):
         text_color, _ = _icon_palette(self._theme)
         composer = QWidget()
         composer.setObjectName("composer")
-        cv = QVBoxLayout(composer)
-        cv.setContentsMargins(14, 12, 12, 8)
+        cv = QHBoxLayout(composer)
+        cv.setContentsMargins(14, 10, 10, 10)
         cv.setSpacing(8)
 
-        # 上层：占位文案输入框（占位文案与参考图一致）
+        # 输入框：占位文案如实描述真实交互，不再写 @ / / 这类本项目没有的前缀语法
         self._chat_input = QLineEdit()
         self._chat_input.setObjectName("commandInput")
-        self._chat_input.setPlaceholderText(
-            "今天帮你做些什么？  @ 添加上下文，/ 调用技能与指令")
+        self._chat_input.setPlaceholderText("今天帮你做些什么？输入一句话，回车发送")
         self._chat_input.returnPressed.connect(self._send)
-        self._chat_input.setFixedHeight(30)
-        cv.addWidget(self._chat_input)
+        self._chat_input.setFixedHeight(34)
+        cv.addWidget(self._chat_input, 1)
 
-        # 下层：一排小控件
-        ctrl = QHBoxLayout()
-        ctrl.setContentsMargins(0, 0, 0, 0)
-        ctrl.setSpacing(4)
-
-        def chip_btn(icon_name, tip, slot=None, width=30):
-            b = QPushButton()
-            b.setObjectName("chip")
-            b.setIcon(icon(icon_name, text_color, 16))
-            b.setIconSize(QSize(16, 16))
-            b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(tip)
-            b.setFixedWidth(width)
-            if slot:
-                b.clicked.connect(slot)
-            self._icon_buttons[b] = (icon_name, "normal")
-            return b
-
-        ctrl.addWidget(chip_btn("plus", "添加上下文（@ 引用桌面文件 / 资料）",
-                                self._add_context))
-
-        def combo(items, tip, width):
-            c = QComboBox()
-            c.setObjectName("cmdCombo")
-            c.addItems(items)
-            c.setToolTip(tip)
-            c.setFixedWidth(width)
-            return c
-
-        branch = combo(["main"], "当前分支（本项目单分支）", 62)
-        ctrl.addWidget(branch)
-        access = combo(["允许完全访问", "受限模式"],
-                       "访问级别（界面展示，由本机权限决定）", 106)
-        ctrl.addWidget(access)
-        ctrl.addStretch(1)
-        # 模型带一个 sparkle 前缀图标感：用 icon 名做 chip + combo
-        spark = chip_btn("sparkle", "模型由设置 / API Key 决定", width=26)
-        ctrl.addWidget(spark)
-        model = combo(["Hy4", "GLM-4.6V", "离线规则"],
-                      "展示当前可用模型；实际模型由设置 / API Key 决定", 78)
-        ctrl.addWidget(model)
-        ctrl.addWidget(chip_btn("mic", "语音输入（需本机麦克风权限）", width=28))
-        # 圆形发送按钮（参考图：右下角圆形向上箭头）
+        # 圆形发送按钮（右下角圆形向上箭头）
         send = QPushButton()
         send.setObjectName("sendRound")
         send.setIcon(icon("arrow-up", "#FFFFFF", 18))
         send.setIconSize(QSize(18, 18))
-        send.setFixedSize(32, 32)
+        send.setFixedSize(34, 34)
         send.setCursor(Qt.PointingHandCursor)
         send.setToolTip("发送（回车同效）")
         send.clicked.connect(self._send)
         self._icon_buttons[send] = ("arrow-up", "white")
-        ctrl.addWidget(send)
+        cv.addWidget(send, 0, Qt.AlignVCenter)
 
-        cv.addLayout(ctrl)
         outer.addWidget(composer)
         return bar
 
@@ -677,13 +627,7 @@ class WorkspaceWindow(QMainWindow):
 
     def _focus_command(self):
         self._chat_input.setFocus()
-        self._chat_input.setText("@ ")
-
-    def _add_context(self):
-        self._chat_input.setFocus()
-        cur = self._chat_input.text()
-        if "@" not in cur:
-            self._chat_input.setText((cur + " @ ").strip())
+        self._chat_input.selectAll()
 
     def _refresh_chat(self):
         # 清空旧气泡（保留末尾的 stretch 弹簧）
