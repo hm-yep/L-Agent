@@ -689,6 +689,7 @@ class TrayIcon(QSystemTrayIcon):
     exit_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     preview_requested = pyqtSignal()
+    workspace_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -696,12 +697,15 @@ class TrayIcon(QSystemTrayIcon):
         self.setIcon(self._make_icon())
 
         menu = QMenu()
+        act_workspace = QAction("打开工作台（可最大化）", menu)
+        act_workspace.triggered.connect(self.workspace_requested.emit)
         act_show = QAction("显示设置", menu)
         act_show.triggered.connect(self.settings_requested.emit)
         act_preview = QAction("助手预览", menu)
         act_preview.triggered.connect(self.preview_requested.emit)
         act_exit = QAction("退出", menu)
         act_exit.triggered.connect(self.exit_requested.emit)
+        menu.addAction(act_workspace)
         menu.addAction(act_show)
         menu.addAction(act_preview)
         menu.addSeparator()

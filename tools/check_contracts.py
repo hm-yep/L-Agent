@@ -169,6 +169,28 @@ def main() -> int:
     check("时间线渲染对撤销账本脱敏",
           "undo_ledger" in trace_src and "html.escape" in trace_src)
 
+    print("=== 桌面 UI ===")
+    ws_path = ROOT / "ui" / "workspace_window.py"
+    check("可最大化工作台存在", ws_path.exists())
+    ws_src = ws_path.read_text(encoding="utf-8") if ws_path.exists() else ""
+    check("工作台支持最大化/还原",
+          "showMaximized" in ws_src and "toggle_maximize" in ws_src)
+    check("工作台记住尺寸与深浅色主题",
+          "save_state" in ws_src and "_apply_theme" in ws_src)
+    check("工作台六个页面读真实数据",
+          all(k in ws_src for k in
+              ("_refresh_prefs", "_refresh_rules", "_refresh_trace",
+               "_refresh_deliveries", "_refresh_chat")))
+    pet_src = (ROOT / "ui" / "pet_window.py").read_text(encoding="utf-8")
+    check("桌宠右键/托盘/输入条三处入口已接线",
+          "open_workspace" in pet_src
+          and pet_src.count("workspace_requested.connect") >= 2)
+    inp_src = (ROOT / "ui" / "input_dialog.py").read_text(encoding="utf-8")
+    tray_src = (ROOT / "ui" / "ui_manager.py").read_text(encoding="utf-8")
+    check("输入条与托盘都有工作台入口",
+          "⛶ 工作台" in inp_src and "打开工作台" in tray_src)
+    check("截图时工作台一并隐藏", "_workspace_was_visible" in pet_src)
+
     print("=== 文档口径 ===")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     check("README 不再使用过时的 119 项数字", "119 项" not in readme)

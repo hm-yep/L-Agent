@@ -73,6 +73,8 @@ class PetWindow(QWidget):
         self.settings = SettingsDialog()
         self.tray = TrayIcon()
         self.preview = None                  # 预览页面（懒加载）
+        self.workspace = None                # 可最大化的主工作台（懒加载）
+        self._workspace_was_visible = False  # 截图前工作台是否可见
 
         # ---- 注册 Framework 回调 ----
         self.fw.register_callback("show_bubble", self._on_bubble)
@@ -114,6 +116,8 @@ class PetWindow(QWidget):
         self.tray.exit_requested.connect(self.quit_app)
         self.tray.settings_requested.connect(self.show_settings)
         self.tray.preview_requested.connect(self.show_preview)
+        self.tray.workspace_requested.connect(self.open_workspace)
+        self.input_box.workspace_requested.connect(self.open_workspace)
 
         # ---- 右键菜单 ----
         self._menu = self._build_menu()
@@ -312,6 +316,11 @@ class PetWindow(QWidget):
         self._plan_card_was_visible = bool(plan_card and plan_card.isVisible())
         if plan_card is not None:
             plan_card.hide()
+        # 工作台也是助手窗口，截图时不该入镜
+        self._workspace_was_visible = bool(
+            self.workspace is not None and self.workspace.isVisible())
+        if self._workspace_was_visible:
+            self.workspace.hide()
 
     def _on_screenshot_restore(self):
         """截图完成，恢复角色显示"""
@@ -320,12 +329,16 @@ class PetWindow(QWidget):
         plan_card = getattr(self.fw, "plan_card", None)
         if plan_card is not None and self._plan_card_was_visible:
             plan_card.show()
+        if self._workspace_was_visible and self.workspace is not None:
+            self.workspace.show()
 
     # ============================================================
     # 右键快捷菜单
     # ============================================================
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
+        act_workspace = QAction("🪟 打开工作台（可最大化）", menu)
+        act_workspace.triggered.connect(self.open_workspace)
         act_preview = QAction("🎨 预览页面", menu)
         act_preview.triggered.connect(self.show_preview)
         act_edit_doc = QAction("📄 修改文件（PPT/Word）", menu)
@@ -353,7 +366,7 @@ class PetWindow(QWidget):
         act_settings.triggered.connect(self.show_settings)
         act_exit = QAction("✖ 退出", menu)
         act_exit.triggered.connect(self.quit_app)
-        for a in (act_preview, act_edit_doc, act_workflows, act_undo,
+        for a in (act_workspace, act_preview, act_edit_doc, act_workflows, act_undo,
                   act_save_skill, act_skills, act_memory, act_reminders,
                   act_todos, act_deliveries, act_worklog, act_settings,
                   act_exit):
@@ -804,6 +817,18 @@ class PetWindow(QWidget):
                 return
         event.ignore()
 
+    def open_workspace(self):
+        """点开可最大化的主工作台（右键 / 托盘 / 输入条三处入口共用）。
+
+        懒加载：第一次才构造窗口；关闭只隐藏不销毁，下次点开立刻回来。
+        首次打开默认按记住的偏好最大化，用户切成窗口模式后会被记住。
+        """
+        if self.workspace is None:
+            from ui.workspace_window import WorkspaceWindow
+            self.workspace = WorkspaceWindow(self.fw)
+            self.workspace.settings_requested.connect(self.show_settings)
+        self.workspace.open_workspace()
+
     def show_preview(self):
         """打开助手预览页面（前端组件调试台）"""
         if self.preview is None:
@@ -935,6 +960,12 @@ class PetWindow(QWidget):
     # ============================================================
     def quit_app(self):
         logger.info("[PetWindow] 退出")
+        if self.workspace is not None:
+            try:
+                self.workspace.save_state()
+                self.workspace.detach()
+            except Exception as e:      # noqa: BLE001 收尾不能挡住退出
+                logger.warning(f"[PetWindow] 工作台收尾失败: {e}")
         self.fw.shutdown()
         self.tray.hide()
         QApplication.quit()

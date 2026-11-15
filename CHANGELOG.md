@@ -2,6 +2,31 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-15] · 可最大化的工作台窗口
+
+> 本日第三版：补齐桌面形态的主窗口。上一版条目的测试数字为当时实测，本版数字见下方「验证」。
+
+### 新增
+
+- `ui/workspace_window.py`：标准 `QMainWindow` 工作台，六个页面（对话 / 我的偏好 / 学到的规则 / 执行轨迹 / 我的交付 / 关于与设置），数据全部读真实 Store。
+- 最大化能力：系统标题栏 + 双击标题栏 + 工具栏「⛶ 最大化 / 还原」；首次打开默认最大化。
+- 状态记忆：窗口尺寸、最大化状态、深浅色主题写入本机 `workspace.ini`；「◐ 深色」一键切换。
+- 关闭语义：点 X / Esc 只隐藏窗口并发出 `workspace_closed`，程序继续留在托盘；再次点开立刻恢复。
+- 「执行轨迹」页可一键调用 `tools/trace_view.py` 生成并打开单文件时间线 HTML。
+- `tests/test_workspace_window.py`：17 项离屏 Qt 测试（最大化语义、六页真实数据、HTML 转义、状态持久化、关闭不退出、三处入口接线）。
+
+### 变更
+
+- `ui/pet_window.py`：右键菜单、托盘菜单、输入条三处新增「打开工作台」入口；截图前后一并隐藏/恢复工作台；退出时保存窗口状态并断开信号。
+- `ui/input_dialog.py` / `ui/ui_manager.py`：新增 `workspace_requested` 信号与对应按钮/菜单项。
+- `tools/check_contracts.py`：新增 7 项桌面 UI 接线校验（工作台存在、最大化/还原、状态记忆、六页数据、三处入口、截图联动）。
+
+### 验证
+
+- `pytest -q`：401 passed / 1 skipped。
+- `python tools/check_contracts.py`：41/41 通过。
+- `main.py --selftest`：35/35；`tools/test_agent_features.py`：157/157；`tools/eval_tasks.py`：38/38；`tools/benchmark.py`：+25.00pp。
+
 ## [2026-11-15] · 可验证执行与自适应
 
 > 本日第二版：在第一版依赖拆分与口径修正之上，补齐「可验证执行 + 偏好学习 + 自我进化」。设计取舍与代价见 [ADR 0003](docs/adr/0003-preference-and-evolution.md)、[ADR 0004](docs/adr/0004-verifiable-execution.md)。

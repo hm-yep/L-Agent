@@ -110,6 +110,8 @@ class InputDialog(QWidget):
     command_submitted = pyqtSignal(str)
     # 用户请求打开聊天记录面板
     history_requested = pyqtSignal()
+    # 用户请求打开可最大化的主工作台窗口
+    workspace_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -153,6 +155,16 @@ class InputDialog(QWidget):
         self._send_btn.setFixedHeight(INPUT_ROW_HEIGHT)   # 与输入框等高，竖边加长
         self._send_btn.clicked.connect(self._on_submit)
         row.addWidget(self._send_btn)
+
+        # 「工作台」按钮：从紧凑输入条一键展开可最大化的主窗口
+        self._workspace_btn = QPushButton("⛶ 工作台", self._panel)
+        self._workspace_btn.setObjectName("barButton")
+        self._workspace_btn.setCursor(Qt.PointingHandCursor)
+        self._workspace_btn.setFocusPolicy(Qt.NoFocus)  # 不抢焦点，避免输入条失焦自关
+        self._workspace_btn.setFixedHeight(INPUT_ROW_HEIGHT)
+        self._workspace_btn.setToolTip("打开可最大化的工作台窗口")
+        self._workspace_btn.clicked.connect(self.workspace_requested.emit)
+        row.addWidget(self._workspace_btn)
 
         wrapper = QVBoxLayout(self)
         wrapper.setContentsMargins(8, 8, 8, 8)
