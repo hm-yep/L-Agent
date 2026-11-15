@@ -668,27 +668,26 @@ class WorkspaceWindow(QMainWindow):
         from .typography import SZ
         p = _LIGHT if self._theme == "light" else _DARK
         fs = SZ["body"] + 1  # 对话正文比通用正文大一档，阅读更舒适
+        # Qt 富文本不支持 display:inline-block / border-radius / max-width，
+        # 之前用 <span> 导致气泡退化成「紧贴文字的窄条」。改用 <table>
+        # （bgcolor + cellpadding + align）做出有内边距、宽度随内容的气泡块。
         parts = []
         for item in history:
             role = item.get("role", "")
             content = html.escape(str(item.get("content", "")))
-            # 这里必须用 f-string：CSS 里的 "76%" 若走 % 格式化会被当成格式符
             if role == "user":
                 parts.append(
-                    f'<div style="text-align:right;margin:9px 0;">'
-                    f'<span style="display:inline-block;max-width:76%;'
-                    f'background:{p["BUBBLE_ME"]};color:{p["BUBBLE_ME_TEXT"]};'
-                    f'padding:10px 14px;border-radius:12px 12px 3px 12px;'
-                    f'font-size:{fs}px;line-height:1.55;'
-                    f'text-align:left;">{content}</span></div>')
+                    f'<table align="right" cellpadding="10" cellspacing="0" '
+                    f'bgcolor="{p["BUBBLE_ME"]}">'
+                    f'<tr><td style="color:{p["BUBBLE_ME_TEXT"]};'
+                    f'font-size:{fs}px;">{content}</td></tr></table>')
             else:
                 parts.append(
-                    f'<div style="text-align:left;margin:9px 0;">'
-                    f'<span style="display:inline-block;max-width:76%;'
-                    f'background:{p["BUBBLE_AI"]};color:{p["TEXT"]};'
-                    f'padding:10px 14px;border-radius:12px 12px 12px 3px;'
-                    f'font-size:{fs}px;line-height:1.55;">'
-                    f'{content}</span></div>')
+                    f'<table align="left" cellpadding="10" cellspacing="0" '
+                    f'bgcolor="{p["BUBBLE_AI"]}">'
+                    f'<tr><td style="color:{p["TEXT"]};'
+                    f'font-size:{fs}px;">{content}</td></tr></table>')
+        # table 是块级元素，Qt 会自动在块间留行距，无需额外 <br/>
         self._chat_view.setHtml("".join(parts))
         self._chat_view.moveCursor(QTextCursor.End)
 
