@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """凌零 · 工作台：对标 WorkBuddy 深色风格的标准主窗口。
 
-桌宠本体是 185px 的无边框角色，适合常驻桌面；但它不适合读长回复、
+桌宠本体是 160px 的无边框角色，适合常驻桌面；但它不适合读长回复、
 看偏好/规则/轨迹表、翻交付清单。这里补一个真正的 QMainWindow，
 外观对标 WorkBuddy：顶部菜单栏 + 左侧品牌导航边栏（含版本、分组、
 底部更新区）+ 主区顶部标题栏（右侧图标）+ 主区底部全局命令栏。
@@ -57,11 +57,11 @@ _LIGHT = dict(
 # 中性冷灰，贴近 WorkBuddy 截图：导航近黑、主区稍亮、选中态低饱和，
 # 强调色只保留一处克制的蓝，去掉原来偏亮的绿/蓝大色块。
 _DARK = dict(
-    BG="#18191C", CARD="#202126", BORDER="#2E3036", TEXT="#E6E8EB",
-    MUTED="#8B9099", NAV="#131417", NAV_TEXT="#B9BEC7",
+    BG="#18191C", CARD="#202126", BORDER="#2E3036", TEXT="#ECEEF1",
+    MUTED="#9AA1AB", NAV="#131417", NAV_TEXT="#C4C9D1",
     NAV_ACTIVE="#2A2C32", ACCENT="#4C8DFF", ACCENT_SOFT="#262A33",
     GOOD="#5DCAA5", BAD="#F09595", ROW_ALT="#1E1F24", INPUT="#202126",
-    BUBBLE_ME="#2F6FED", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#2A2C33",
+    BUBBLE_ME="#2F6FED", BUBBLE_ME_TEXT="#FFFFFF", BUBBLE_AI="#2E323A",
 )
 
 _QSS_TEMPLATE = """
@@ -172,7 +172,7 @@ QListWidget#deliveryList {
     background: __CARD__; color: __TEXT__; border: 1px solid __BORDER__;
     border-radius: 9px; font-size: __FS_SMALL__px; padding: 6px;
 }
-QLabel#hintLabel { color: __MUTED__; font-size: __FS_SMALL__px; }
+QLabel#hintLabel { color: __TEXT__; font-size: __FS_BODY__px; }
 QStatusBar#statusBar { background: __CARD__; color: __MUTED__;
                        border-top: 1px solid __BORDER__; font-size: __FS_MICRO__px; }
 """
@@ -662,10 +662,12 @@ class WorkspaceWindow(QMainWindow):
         history = list(getattr(self.fw.memory, "history", []) or [])[-60:]
         if not history:
             self._chat_view.setHtml(
-                '<div style="color:#8899aa;padding:24px;text-align:center;">'
+                '<div style="color:#aab4bf;padding:24px;text-align:center;">'
                 '还没有对话。在底部命令栏输入一句话，或点桌宠直接说。</div>')
             return
+        from .typography import SZ
         p = _LIGHT if self._theme == "light" else _DARK
+        fs = SZ["body"] + 1  # 对话正文比通用正文大一档，阅读更舒适
         parts = []
         for item in history:
             role = item.get("role", "")
@@ -673,17 +675,19 @@ class WorkspaceWindow(QMainWindow):
             # 这里必须用 f-string：CSS 里的 "76%" 若走 % 格式化会被当成格式符
             if role == "user":
                 parts.append(
-                    f'<div style="text-align:right;margin:8px 0;">'
+                    f'<div style="text-align:right;margin:9px 0;">'
                     f'<span style="display:inline-block;max-width:76%;'
                     f'background:{p["BUBBLE_ME"]};color:{p["BUBBLE_ME_TEXT"]};'
-                    f'padding:9px 13px;border-radius:12px 12px 3px 12px;'
+                    f'padding:10px 14px;border-radius:12px 12px 3px 12px;'
+                    f'font-size:{fs}px;line-height:1.55;'
                     f'text-align:left;">{content}</span></div>')
             else:
                 parts.append(
-                    f'<div style="text-align:left;margin:8px 0;">'
+                    f'<div style="text-align:left;margin:9px 0;">'
                     f'<span style="display:inline-block;max-width:76%;'
                     f'background:{p["BUBBLE_AI"]};color:{p["TEXT"]};'
-                    f'padding:9px 13px;border-radius:12px 12px 12px 3px;">'
+                    f'padding:10px 14px;border-radius:12px 12px 12px 3px;'
+                    f'font-size:{fs}px;line-height:1.55;">'
                     f'{content}</span></div>')
         self._chat_view.setHtml("".join(parts))
         self._chat_view.moveCursor(QTextCursor.End)
