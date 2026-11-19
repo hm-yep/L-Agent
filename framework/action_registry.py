@@ -53,6 +53,9 @@ ACTION_SPECS = {
     # ---- 检索与分析 ----
     "web_search":   {"params": ["query"], "effect": "no_effect", "skill": True,  "desc": "联网检索"},
     "read_doc":     {"params": ["path"],  "effect": "no_effect", "skill": True,  "desc": "读本机文档"},
+    "list_dir":     {"params": ["path"],  "effect": "no_effect", "skill": True,  "desc": "列本机文件夹"},
+    "edit_doc":     {"params": ["path", "instruction"], "effect": "restorable",
+                     "skill": False, "desc": "改写本机文档（改前先落副本，可还原）"},
     "analyze_data": {"params": ["path"],  "effect": "reversible","skill": True,  "desc": "分析表格并出图"},
     "work_log":     {"params": [],        "effect": "no_effect", "skill": False, "desc": "播报今日工作日志"},
     "run_workflow": {"params": ["name"],  "effect": "blind",     "skill": False, "desc": "启动一键工作流"},
@@ -62,7 +65,7 @@ ACTION_SPECS = {
     "run_skill":    {"params": ["skill"], "effect": "reversible","skill": False, "desc": "零模型重放技能"},
 }
 
-EFFECT_CLASSES = {"reversible", "blind", "no_effect", "undo"}
+EFFECT_CLASSES = {"reversible", "restorable", "blind", "no_effect", "undo"}
 
 
 def all_actions() -> set:

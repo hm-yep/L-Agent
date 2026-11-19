@@ -68,6 +68,9 @@ def fake_voice(monkeypatch):
     monkeypatch.setitem(sys.modules, "framework.voice_input", fake)
     # 包对象上也指向假模块，避免 from-import 拿到真实模块
     monkeypatch.setattr(framework, "voice_input", fake, raising=False)
+    # /voice 现在用 find_spec 真探测可选依赖；测试注入的是假模块，
+    # 这里显式把「依赖可用」打开，让用例仍测得到转写链路本身。
+    monkeypatch.setattr(srv, "_VOICE_AVAILABLE", True)
     return seen
 
 
@@ -323,3 +326,70 @@ def test_cors_is_not_wildcard():
     assert "*" not in origins
     assert "*" not in opts.get("allow_methods", [])
     assert "*" not in opts.get("allow_headers", [])
+
+
+# ---------------- 前端可达性与可选能力的诚实回显 ----------------
+def test_index_is_reachable_with_token_but_api_still_protected(client, monkeypatch):
+    """静态首页免令牌：否则 Docker 场景下页首的令牌输入框永远不可达。"""
+    monkeypatch.setattr(srv.config, "API_AUTH_TOKEN", "unit-test-token")
+    assert client.get("/").status_code == 200
+    assert client.get("/health").status_code == 401
+    assert client.get("/health",
+                      headers={"X-API-Key": "unit-test-token"}).status_code == 200
+
+
+def test_health_reports_optional_capabilities(client):
+    body = client.get("/health").json()
+    for key in ("rag_available", "voice_available", "llm_key_configured",
+                "search_key_configured", "auth_required"):
+        assert isinstance(body[key], bool), key
+
+
+def test_voice_returns_503_when_dependency_missing(client, monkeypatch):
+    monkeypatch.setattr(srv, "_VOICE_AVAILABLE", False)
+    r = client.post("/voice",
+                    files={"file": ("a.wav", b"RIFFDATA", "audio/wav")})
+    assert r.status_code == 503
+    assert "requirements-voice.txt" in r.json()["detail"]
+
+
+def test_voice_chat_returns_503_when_dependency_missing(client, monkeypatch):
+    monkeypatch.setattr(srv, "_VOICE_AVAILABLE", False)
+    r = client.post("/voice/chat",
+                    files={"file": ("a.wav", b"RIFFDATA", "audio/wav")})
+    assert r.status_code == 503
+
+
+def test_voice_chat_works_with_fake_module(client, fake_voice, monkeypatch):
+    """前端「按住说话」走的就是这个端点，之前零测试覆盖。"""
+    monkeypatch.setattr(srv, "agent_chat", lambda *a, **kw: ("收到", []))
+    r = client.post("/voice/chat",
+                    files={"file": ("voice.wav", b"RIFFDATA", "audio/wav")})
+    assert r.status_code == 200
+    assert "识别出来的文字" in r.json()["reply"]
+    assert fake_voice["data"] == b"RIFFDATA"
+    assert fake_voice["language"] == "zh"
+
+
+def test_agent_run_explains_missing_key(client, monkeypatch):
+    """无 Key 时给可诊断文案，而不是「编排失败，详见服务端日志」。"""
+    import framework.multi_agent as ma
+
+    class Boom:
+        def run(self, task):
+            raise RuntimeError("no key")
+
+    monkeypatch.setattr(ma, "get_orchestrator", lambda: Boom())
+    monkeypatch.setattr(config, "DEEPSEEK_API_KEY", "")
+    r = client.post("/agent/run", json={"task": "写周报"})
+    assert r.status_code == 500
+    assert "DEEPSEEK_API_KEY" in r.json()["detail"]
+
+
+def test_web_debug_console_gates_controls_on_health():
+    """网页调试台按 /health 的真实能力置灰控件，不摆点了必失败的按钮。"""
+    from pathlib import Path
+    html = Path("api/static/index.html").read_text(encoding="utf-8")
+    for token in ("loadCapabilities", "llm_key_configured", "voice_available",
+                  "applyCaps", "newSessionBtn", "isComposing"):
+        assert token in html, token

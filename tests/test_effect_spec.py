@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """单元测试：形式化动作契约 framework/effect_spec.py
 
-覆盖：validate_specs() 在真实实现上为空、30 动作全覆盖、effect/observables
+覆盖：validate_specs() 在真实实现上为空、32 动作全覆盖、effect/observables
 与 coverage()/_TOUCHES 一致、负向 monkeypatch（删动作 / 加新动作 / 必填参数
 漂移）能被报错、check_pre 各动作参数的合法与非法、check_post 能发现「声明
 无副作用却改动了世界」且绝不抛异常、involution_check 全通过且同 seed 确定、
@@ -23,8 +23,8 @@ def test_validate_specs_empty_on_real_impl():
     assert effect_spec.validate_specs() == []
 
 
-def test_specs_cover_all_30_actions():
-    assert len(effect_spec.SPECS) == 30
+def test_specs_cover_all_32_actions():
+    assert len(effect_spec.SPECS) == 32
     assert set(effect_spec.SPECS) == reg.all_actions() == set(VALID_ACTIONS)
     for name in reg.all_actions():
         s = effect_spec.spec_for(name)
@@ -35,14 +35,17 @@ def test_specs_cover_all_30_actions():
 def test_classification_and_observables_match_coverage():
     cov = effect_journal.coverage(VALID_ACTIONS)
     classified = {}
-    for key in ("reversible", "blind", "no_effect", "undo"):
+    for key in ("reversible", "restorable", "blind", "no_effect", "undo"):
         for name in cov[key]:
             classified[name] = key
     touches = effect_journal._TOUCHES
     for name in reg.all_actions():
         s = effect_spec.spec_for(name)
         assert s["effect"] == classified[name], name
-        assert s["reversible"] is (classified[name] == "reversible"), name
+        # restorable 也撤得回来（靠副本账本），所以 reversible 同为 True，
+        # 它与 reversible 的区别只在逆操作来源，不在「能不能撤」。
+        assert s["reversible"] is (
+            classified[name] in ("reversible", "restorable")), name
         assert sorted(s["observables"]) == sorted(touches.get(name, ())), name
         assert set(s["observables"]) <= set(effect_journal.WORLD_KEYS), name
 

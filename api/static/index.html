@@ -5,76 +5,174 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>凌零 · 智能体服务</title>
 <style>
+  /* ============================================================
+     设计令牌：与 ui/theme.py 的 DARK / LIGHT 同一组色值。
+     工作台内嵌时用 JS 设 document 的 data-theme 属性，
+     浏览器独立访问时同样可用，两套入口看到的是同一张界面。
+     ============================================================ */
+  :root {
+    --bg: #14161A; --surface: #1A1D23; --surface2: #20242C;
+    --elevated: #262B34; --nav: #101216;
+    --border: #2A2F38; --border-strong: #3A414C;
+    --text: #E8EBF0; --text2: #A2AAB7; --text3: #6D7583;
+    --accent: #4F8CFF; --accent-hover: #6BA0FF; --accent-text: #FFFFFF;
+    --accent-soft: #1E2739;
+    --good: #48B88A; --warn: #E0A03C; --bad: #E5645C;
+    --bubble-me: #22355B; --bubble-ai: #20242C;
+    --shadow: rgba(0,0,0,.35); --hover: #22262F;
+    --font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "DengXian", sans-serif;
+  }
+  html[data-theme="light"] {
+    --bg: #F6F7F9; --surface: #FFFFFF; --surface2: #F2F4F7;
+    --elevated: #E9ECF1; --nav: #F0F2F6;
+    --border: #DFE3E9; --border-strong: #C8CED8;
+    --text: #1B1F26; --text2: #5A6371; --text3: #8A93A1;
+    --accent: #2F6FED; --accent-hover: #2862D2; --accent-text: #FFFFFF;
+    --accent-soft: #EAF1FF;
+    --good: #0F7B58; --warn: #9A6A12; --bad: #B42318;
+    --bubble-me: #2F6FED; --bubble-ai: #F0F2F5;
+    --shadow: rgba(15,43,70,.12); --hover: #EEF1F5;
+  }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Microsoft YaHei", sans-serif;
-         margin: 0; background: #f2f6fa; color: #26303a; height: 100vh;
-         display: flex; flex-direction: column; }
-  header { background: linear-gradient(135deg, #0F2B46, #1B6B9A);
-           color: #fff; padding: 18px 24px; }
-  header h1 { margin: 0; font-size: 20px; letter-spacing: 1px; }
-  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; }
+  body { font-family: var(--font); margin: 0; background: var(--bg);
+         color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { background: var(--nav); color: var(--text);
+           border-bottom: 1px solid var(--border); padding: 18px 24px; }
+  header h1 { margin: 0; font-size: 17px; letter-spacing: .5px; font-weight: 600; }
+  header p { margin: 4px 0 0; font-size: 12px; color: var(--text2); }
   #chat { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 900px;
           margin: 0 auto; width: 100%; }
   .msg { margin: 12px 0; display: flex; gap: 10px; }
   .msg.user { flex-direction: row-reverse; }
   .bubble { padding: 10px 14px; border-radius: 12px; max-width: 72%;
-            line-height: 1.65; font-size: 15px; white-space: pre-wrap;
-            word-break: break-word; }
-  .user .bubble { background: #1B6B9A; color: #fff; }
-  .bot .bubble { background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-  .refs { font-size: 12px; color: #7a8a99; margin-top: 4px; }
-  .refs span { background: #e8f1f8; padding: 2px 6px; border-radius: 4px;
-               margin-right: 4px; display: inline-block; }
-  footer { border-top: 1px solid #e3ecf3; padding: 12px 24px; background: #fff;
-           display: flex; flex-direction: column; gap: 6px;
-           max-width: 900px; margin: 0 auto; width: 100%; }
+            line-height: 1.65; font-size: 14px; white-space: pre-wrap;
+            word-break: break-word; background: var(--bubble-ai);
+            border: 1px solid var(--border); }
+  .user .bubble { background: var(--bubble-me); color: var(--accent-text);
+                  border-color: transparent; }
+  .refs { font-size: 12px; color: var(--text2); margin-top: 4px; }
+  .refs span { background: var(--accent-soft); color: var(--text);
+               padding: 2px 6px; border-radius: 4px; margin-right: 4px;
+               display: inline-block; }
+  footer { border-top: 1px solid var(--border); padding: 12px 24px;
+           background: var(--surface); display: flex; flex-direction: column;
+           gap: 6px; max-width: 900px; margin: 0 auto; width: 100%; }
   .row { display: flex; gap: 8px; width: 100%; }
-  input[type=text] { flex: 1; border: 1px solid #cfdde8; border-radius: 8px;
-                     padding: 10px 12px; font-size: 14px; outline: none; }
-  input[type=text]:focus { border-color: #1B6B9A; }
-  button { background: #1B6B9A; color: #fff; border: none;
-           padding: 10px 16px; border-radius: 8px; cursor: pointer;
-           font-size: 14px; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  #record { min-width: 48px; background: #4E565E; font-size: 18px; }
-  #record.recording { background: #D9302B; }
-  .opts { display: flex; gap: 14px; font-size: 12px; color: #55697a;
+  input[type=text] { flex: 1; border: 1px solid var(--border-strong);
+                     border-radius: 8px; padding: 10px 12px; font-size: 14px;
+                     outline: none; background: var(--surface2); color: var(--text); }
+  input[type=text]:focus { border-color: var(--accent); }
+  button { background: var(--accent); color: var(--accent-text); border: 1px solid transparent;
+           padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  /* 线框图标：只有描边、没有填充，跟随按钮文字色，不依赖 emoji 字体 */
+  .ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: 5px;
+         fill: none; stroke: currentColor; stroke-width: 1.8;
+         stroke-linecap: round; stroke-linejoin: round; }
+  #record .ico { width: 18px; height: 18px; margin: 0; vertical-align: middle; }
+  #record { min-width: 48px; background: var(--elevated); color: var(--text);
+            border-color: var(--border); font-size: 14px; }
+  #record.recording { background: var(--bad); color: #fff; }
+  .opts { display: flex; gap: 14px; font-size: 12px; color: var(--text2);
           align-items: center; flex-wrap: wrap; }
   .opts label { display: flex; align-items: center; gap: 4px; }
-  #agentBtn { background: #4E565E; padding: 6px 12px; font-size: 12px; }
-  #ingestBtn { background: #2E8B57; padding: 6px 12px; font-size: 12px; }
+  /* 次要操作按钮统一线框：边框 + 文字，不用彩色填充块 */
+  #agentBtn, #ingestBtn, #readFileBtn, #newSessionBtn {
+    background: transparent; color: var(--text2); border: 1px solid var(--border);
+    padding: 6px 12px; font-size: 12px; }
+  #agentBtn:hover, #ingestBtn:hover, #readFileBtn:hover, #newSessionBtn:hover {
+    color: var(--text); border-color: var(--border-strong); background: var(--hover); }
 
   /* ---- 入库弹窗 ---- */
-  #ingestModal {
-    display: none; position: fixed; inset: 0;
-    background: rgba(15,43,70,.45); z-index: 100;
-    align-items: center; justify-content: center;
-  }
+  #ingestModal { display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.55); z-index: 100;
+    align-items: center; justify-content: center; }
   #ingestModal.show { display: flex; }
-  .modal-box {
-    background: #fff; border-radius: 14px; padding: 22px 24px;
-    width: min(520px, 90vw); box-shadow: 0 8px 30px rgba(15,43,70,.25);
-    display: flex; flex-direction: column; gap: 12px;
-  }
-  .modal-box h3 { margin: 0; font-size: 17px; color: #1B6B9A; }
-  .modal-box .hint { font-size: 12px; color: #7a8a99; line-height: 1.5; }
-  .modal-box textarea {
-    width: 100%; min-height: 160px; resize: vertical;
-    border: 1px solid #cfdde8; border-radius: 8px; padding: 10px 12px;
-    font-size: 14px; font-family: inherit; outline: none;
-  }
-  .modal-box textarea:focus { border-color: #1B6B9A; }
+  .modal-box { background: var(--surface); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: 12px;
+    padding: 22px 24px; width: min(520px, 90vw);
+    box-shadow: 0 8px 30px var(--shadow);
+    display: flex; flex-direction: column; gap: 12px; }
+  .modal-box h3 { margin: 0; font-size: 17px; color: var(--text); }
+  .modal-box .hint { font-size: 12px; color: var(--text2); line-height: 1.5; }
+  .modal-box textarea { width: 100%; min-height: 160px; resize: vertical;
+    border: 1px solid var(--border-strong); border-radius: 8px;
+    padding: 10px 12px; font-size: 14px; font-family: inherit; outline: none;
+    background: var(--surface2); color: var(--text); }
+  .modal-box textarea:focus { border-color: var(--accent); }
   .modal-box input[type=text] { width: 100%; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .modal-actions button.ghost { background: #4E565E; }
-  .token-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .92; }
+  .modal-actions button.ghost { background: var(--elevated); color: var(--text);
+    border-color: var(--border); }
+  .token-row { margin-top: 10px; display: flex; align-items: center; gap: 8px;
+               font-size: 12px; color: var(--text2); }
   .token-row label { white-space: nowrap; }
-  .token-row input { flex: 0 1 260px; border: 1px solid rgba(255,255,255,.45); border-radius: 6px; padding: 5px 8px; font-size: 12px; color: #26303a; background: #fff; outline: none; }
+  .token-row input { flex: 0 1 260px; border: 1px solid var(--border-strong);
+    border-radius: 6px; padding: 5px 8px; font-size: 12px;
+    color: var(--text); background: var(--surface2); outline: none; }
+
+  /* ---- 服务端能力状态条：/health 说不可用的能力，对应控件直接置灰 ---- */
+  .cap-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  .cap { font-size: 12px; padding: 3px 9px; border-radius: 999px;
+         color: var(--text2); background: var(--surface2);
+         border: 1px solid var(--border); }
+  .cap.ok { color: var(--good); border-color: var(--good); }
+  .cap.off { color: var(--bad); border-color: var(--bad); }
+  #recheckBtn { padding: 4px 10px; font-size: 12px; background: transparent;
+                color: var(--text2); border: 1px solid var(--border); }
+  #statusLine { font-size: 12px; margin-top: 8px; line-height: 1.5; color: var(--text2); }
+  input[type=text]:disabled { background: var(--surface2); color: var(--text3); }
+  label.off { opacity: .5; }
+  /* 操作反馈条：任何点击都给一句结果，避免出现「点了没反应」 */
+  #actionHint { font-size: 12px; line-height: 1.5; }
+  #actionHint:not(:empty) { padding: 7px 10px; border-radius: 6px;
+    background: var(--accent-soft); color: var(--text); margin-bottom: 4px;
+    border: 1px solid var(--border); }
+  #actionHint.bad { color: var(--bad); border-color: var(--bad); }
+
+  /* ---- 本机文件授权确认条：与桌面授权卡同一套三档、同一组令牌 ---- */
+  #grantBar { background: var(--surface2); border: 1px solid var(--warn);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+  #grantBar[hidden] { display: none; }
+  .grant-head strong { color: var(--text); font-size: 13px; }
+  .grant-head .ico { stroke: var(--warn); }
+  #grantReason { font-size: 12px; color: var(--text2); margin-left: 8px; }
+  #grantPath { font-size: 12px; color: var(--text); margin: 6px 0; word-break: break-all; }
+  .grant-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .grant-btns button { padding: 7px 12px; font-size: 12px; }
+  #grantFile { background: transparent; color: var(--good); border-color: var(--good); }
+  #grantTree { background: transparent; color: var(--warn); border-color: var(--warn); }
+  #grantDeny { background: transparent; color: var(--text2); border-color: var(--border); }
+  #grantBar small { display: block; font-size: 11px; color: var(--text2);
+    margin-top: 7px; line-height: 1.5; }
 </style>
 </head>
 <body>
+<!-- 与桌面端 ui/icons.py 同一套描边口径（24x24 / fill=none / 1.8px） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="2"/><line x1="12" y1="4" x2="12" y2="8"/><circle cx="12" cy="3" r="1"/><line x1="9" y1="13" x2="9" y2="13.01"/><line x1="15" y1="13" x2="15" y2="13.01"/><line x1="9" y1="17" x2="15" y2="17"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></symbol>
+  <symbol id="i-broom" viewBox="0 0 24 24"><path d="M19 3l-8 8"/><path d="M14 6l4 4"/><path d="M10 11l3 3-5 5-4-4z"/><path d="M5 18l-2 3h8l1-3"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+</svg>
 <header>
   <h1>凌零 · 智能体服务</h1>
+  <p>网页调试台 · 按钮可用性由服务端真实能力决定</p>
+  <div class="cap-bar">
+    <span id="capLlm" class="cap">模型 Key：检测中…</span>
+    <span id="capRag" class="cap">知识库：检测中…</span>
+    <span id="capSearch" class="cap">联网搜索：检测中…</span>
+    <span id="capVoice" class="cap">语音：检测中…</span>
+    <button id="recheckBtn" title="重新读取 /health，检测服务端能力">重新检测</button>
+    <button id="themeBtn" title="切换深色 / 浅色；工作台内嵌时由工作台统一定">切换主题</button>
+  </div>
+  <div id="statusLine">正在检测服务端能力……</div>
   <div class="token-row">
     <label for="apiToken">访问令牌（服务端设置 LINGLING_API_TOKEN 时填写）</label>
     <input id="apiToken" type="password" placeholder="留空 = 仅本机免令牌访问" autocomplete="off">
@@ -82,23 +180,39 @@
 </header>
 <div id="chat"></div>
 <footer>
+  <div id="actionHint" role="status" aria-live="polite"></div>
+  <div id="grantBar" hidden>
+    <div class="grant-head">
+      <strong><svg class="ico"><use href="#i-lock"></use></svg>本机文件访问确认</strong>
+      <span id="grantReason"></span>
+    </div>
+    <div id="grantPath"></div>
+    <div class="grant-btns">
+      <button id="grantFile" title="只放开这一个文件；同目录另一个文件仍要再问">只读这一个</button>
+      <button id="grantTree" title="本次会话内放开整个文件夹及其子树">允许整个文件夹（本次会话）</button>
+      <button id="grantDeny" title="不读这份文件">拒绝</button>
+    </div>
+    <small>授权只在本次运行有效，重启后失效；可随时在工作台「本机访问」页全部撤销。</small>
+  </div>
   <div class="row">
     <input id="input" type="text" placeholder="说点什么……（Enter 发送）" autofocus>
-    <button id="record" title="按住说话">🎤</button>
+    <button id="record" title="按住说话（需安装语音依赖并配置模型 Key）"><svg class="ico"><use href="#i-mic"></use></svg></button>
     <button id="send">发送</button>
   </div>
   <div class="opts">
     <label><input type="checkbox" id="use_rag"> 使用知识库</label>
     <label><input type="checkbox" id="use_search"> 联网搜索</label>
-    <button id="agentBtn" title="走 /agent/run，Planner → Executor → Reviewer">🤖 多智能体</button>
-    <button id="ingestBtn" title="往知识库写入文本">📚 入库</button>
+    <button id="readFileBtn" title="把输入框里的完整本机路径交给凌零读取（不在默认目录会先弹授权确认）"><svg class="ico"><use href="#i-folder"></use></svg>读本机文件</button>
+    <button id="agentBtn" title="走 /agent/run，Planner → Executor → Reviewer（独立任务，不沿用会话上下文）"><svg class="ico"><use href="#i-robot"></use></svg>多智能体</button>
+    <button id="ingestBtn" title="往知识库写入文本（需要 RAG 依赖）"><svg class="ico"><use href="#i-book"></use></svg>入库</button>
+    <button id="newSessionBtn" title="开始新会话：本页不再带入之前的上下文（不删除本机聊天记录）"><svg class="ico"><use href="#i-broom"></use></svg>新会话</button>
   </div>
 </footer>
 
 <!-- 入库弹窗 -->
 <div id="ingestModal">
   <div class="modal-box">
-    <h3>📚 往知识库写入文本</h3>
+    <h3><svg class="ico"><use href="#i-book"></use></svg>往知识库写入文本</h3>
     <div class="hint">首次入库会下载 BGE 嵌入模型（约 100MB），可能等 10-30 秒。</div>
     <input id="ingestSource" type="text" placeholder="来源名（可选，默认 manual）">
     <textarea id="ingestText" placeholder="粘贴要入库的文本……"></textarea>
@@ -116,12 +230,158 @@ const send = document.getElementById('send');
 const recordBtn = document.getElementById('record');
 let sid = null;
 
+// ---- 服务端能力检测：/health 是唯一真源 ----
+// 以前所有按钮一上来都可点，但默认装法（只装 requirements-api.txt、无 Key）
+// 下点哪个都是 500/503；现在不可用能力对应的控件直接置灰并写明原因。
+const CAPS = { reachable: false, llm: false, rag: false, search: false, voice: false };
+const $ = id => document.getElementById(id);
+function llmReady() { return CAPS.reachable && CAPS.llm; }
+
+// 主题：默认深色 = 桌面工作台基调；工作台内嵌时由宿主注入 data-theme 属性，
+// 浏览器独立访问时点「切换主题」自己翻。两个入口同一套令牌。
+document.documentElement.setAttribute(
+  'data-theme', document.documentElement.getAttribute('data-theme') || 'dark');
+$('themeBtn').onclick = () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+};
+
+// 统一操作反馈：所有 early-return 都要说清为什么没执行，不再静默吞掉点击
+let hintTimer = null;
+function hint(msg, ok = true) {
+  const node = $('actionHint');
+  node.textContent = (ok ? '完成：' : '注意：') + msg;
+  node.className = ok ? '' : 'bad';
+  if (hintTimer) clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { node.textContent = ''; node.className = ''; }, 5000);
+}
+
+// ---- 本机文件授权：三档按钮与桌面授权卡一一对应，答案经 /grant 落桌面记录 ----
+let pendingGrant = null;
+let grantRetry = null;      // 用户答完后要重发的原始请求
+
+function showGrant(info) {
+  $('grantReason').textContent = info.reason || '这个文件不在默认可读取的目录里';
+  $('grantPath').textContent = (info.dir ? info.dir + ' → ' : '')
+    + (info.name || info.path || '');
+  $('grantBar').hidden = false;
+}
+
+async function answerGrant(decision) {
+  const info = pendingGrant;
+  if (!info) return;
+  pendingGrant = null;
+  $('grantBar').hidden = true;
+  const retry = grantRetry;
+  grantRetry = null;
+  try {
+    const r = await fetch('/grant/' + encodeURIComponent(info.gid), {
+      method: 'POST',
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({decision})
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { hint('授权失败：' + errHint(r, data), false); return; }
+    hint(data.message || '已记录你的选择');
+    // 允许后自动重发原请求；这一次服务端判据会直接 allow。
+    if (decision !== 'deny' && retry) {
+      if (retry.agent) await runAgent(retry.text, retry.readPath);
+      else await sendMsg(retry.text, retry.readPath);
+    }
+  } catch (e) {
+    hint('授权请求失败：' + e.message, false);
+  }
+}
+$('grantFile').onclick = () => answerGrant('file');
+$('grantTree').onclick = () => answerGrant('tree');
+$('grantDeny').onclick = () => answerGrant('deny');
+
+function setCap(nodeId, label, ok) {
+  const node = $(nodeId);
+  node.textContent = label + '：' + (!CAPS.reachable ? '未知' : (ok ? '可用' : '不可用'));
+  node.className = 'cap ' + (CAPS.reachable && ok ? 'ok' : 'off');
+}
+
+function updateSessionButtons() {
+  const btn = $('newSessionBtn');
+  btn.disabled = !CAPS.reachable || !sid;
+  btn.title = !sid ? '当前还没有会话' : '重置会话上下文（DELETE /sessions/{sid}）';
+}
+
+function applyCaps() {
+  const llm = llmReady();
+  const rag = CAPS.reachable && CAPS.rag;
+  const search = CAPS.reachable && CAPS.search;
+  const voice = CAPS.reachable && CAPS.voice;
+  setCap('capLlm', '模型 Key', CAPS.llm);
+  setCap('capRag', '知识库', CAPS.rag);
+  setCap('capSearch', '联网搜索', CAPS.search);
+  setCap('capVoice', '语音', CAPS.voice);
+
+  const block = (node, ok, reason) => {
+    node.disabled = !ok;
+    if (!ok) node.title = reason;
+  };
+  const needLlm = '需要服务端配置 DEEPSEEK_API_KEY';
+  const needRag = '需要 pip install -r requirements-rag.txt';
+  const needSearch = '需要配置 WEBSEARCH_API_KEY，否则勾选也不会真正检索';
+  const needVoice = '需要 pip install -r requirements-voice.txt';
+  block($('input'), llm, needLlm);
+  block($('send'), llm, needLlm);
+  block($('agentBtn'), llm, '多智能体编排' + needLlm);
+  block($('readFileBtn'), llm, '读本机文件' + needLlm);
+  block($('use_rag'), rag, needRag);
+  block($('use_search'), search, needSearch);
+  block($('ingestBtn'), rag, needRag);
+  block($('ingestConfirm'), rag, needRag);
+  block($('record'), llm && voice, voice ? needLlm : needVoice);
+  $('use_rag').parentElement.classList.toggle('off', !rag);
+  $('use_search').parentElement.classList.toggle('off', !search);
+
+  const reasons = [];
+  if (!CAPS.reachable) reasons.push('能力检测未通过：请在页首填写访问令牌后点「重新检测」');
+  if (!CAPS.llm) reasons.push('模型 Key 未配置：对话 / 多智能体 / 语音对话需要 DEEPSEEK_API_KEY');
+  if (!CAPS.rag) reasons.push('知识库依赖未装：pip install -r requirements-rag.txt');
+  if (!CAPS.search) reasons.push('联网搜索未配置 Key：勾选也不会真正检索');
+  if (!CAPS.voice) reasons.push('语音依赖未装：pip install -r requirements-voice.txt');
+  $('statusLine').textContent = reasons.length
+    ? '注意：' + reasons.join('；') : '全部能力可用，可以直接开始对话。';
+  updateSessionButtons();
+}
+
+async function loadCapabilities() {
+  CAPS.reachable = false;
+  $('statusLine').textContent = '正在检测服务端能力……';
+  try {
+    const r = await fetch('/health', { headers: authHeaders() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      applyCaps();
+      $('statusLine').textContent = (r.status === 401 || r.status === 403)
+        ? '注意：访问令牌无效或未填写：请在页首填写后点「重新检测」，其余功能暂不可用。'
+        : '注意：能力检测失败：' + errHint(r, data);
+      return;
+    }
+    CAPS.reachable = true;
+    CAPS.llm = !!data.llm_key_configured;
+    CAPS.rag = !!data.rag_available;
+    CAPS.search = !!data.search_key_configured;
+    CAPS.voice = !!data.voice_available;
+    applyCaps();
+  } catch (e) {
+    applyCaps();
+    $('statusLine').textContent = '注意：连不上服务端 /health：' + e.message;
+  }
+}
+$('recheckBtn').onclick = loadCapabilities;
+
 // 访问令牌只保存在当前标签页（sessionStorage），关闭即失效，不写进 URL 或日志。
 // 服务端未配置 LINGLING_API_TOKEN 时留空即可：默认只接受本机回环请求。
 const tokenInput = document.getElementById('apiToken');
 tokenInput.value = sessionStorage.getItem('lingling_api_token') || '';
 tokenInput.addEventListener('change', () => {
   sessionStorage.setItem('lingling_api_token', tokenInput.value.trim());
+  loadCapabilities();   // 令牌变了，重新探测能力并刷新按钮可用性
 });
 function authHeaders(base) {
   const token = (tokenInput.value || '').trim();
@@ -147,7 +407,7 @@ function addMsg(role, text, refs) {
     const r = document.createElement('div');
     r.className = 'refs';
     r.innerHTML = refs.map(x =>
-      `<span>${x.source || x.title || ''}</span>`).join('');
+      `<span>${x.source || x.title || x.name || ''}</span>`).join('');
     div.appendChild(r);
   }
   chat.appendChild(div);
@@ -158,89 +418,150 @@ function addMsg(role, text, refs) {
 // 把 /chat 返回的 references 转换成状态提示
 function describeSearchRefs(refs) {
   if (!refs || !refs.length) return '';
+  const parts = [];
   const ragErr = refs.find(x => x.type === 'rag_error');
-  if (ragErr) return `\n\n⚠️ 知识库检索失败：${ragErr.message}`;
+  if (ragErr) parts.push(`注意：知识库检索失败：${ragErr.message}`);
   const ragOk = refs.filter(x => x.type === 'rag');
   const err = refs.find(x => x.type === 'search_error');
   const warn = refs.find(x => x.type === 'search_warn');
   const searchOk = refs.filter(x => x.type === 'search');
-  const parts = [];
-  if (ragOk.length) parts.push(`📚 知识库命中 ${ragOk.length} 条`);
-  if (err) parts.push(`⚠️ 搜索失败：${err.message}`);
-  else if (warn) parts.push(`⚠️ 搜索质量预警：${warn.reason}`);
-  else if (searchOk.length) parts.push(`✅ 联网检索到 ${searchOk.length} 条资料`);
+  if (ragOk.length) parts.push(`知识库命中 ${ragOk.length} 条`);
+  if (err) parts.push(`注意：搜索失败：${err.message}`);
+  else if (warn) parts.push(`注意：搜索质量预警：${warn.reason}`);
+  else if (searchOk.length) parts.push(`联网检索到 ${searchOk.length} 条资料`);
+
+  // 本机文件的读取证据卡：不能只说「读完了」，要说清实际读了什么、
+  // 跳过了什么、截断到多少字，用户才判断得出这份回答可不可信。
+  refs.filter(x => x.type === 'local_file').forEach(f => {
+    const bits = [];
+    if (f.kind) bits.push('类型 ' + f.kind);
+    if (f.total != null) bits.push('目录共 ' + f.total + ' 项'
+      + (f.listed != null ? '，列了 ' + f.listed + ' 项' : ''));
+    if (f.pages != null) bits.push('读了 ' + f.pages + ' 页');
+    if (f.chars != null) bits.push('截到 ' + f.chars + ' 字');
+    if (f.skipped) {
+      const sk = Array.isArray(f.skipped)
+        ? f.skipped.join('、') : String(f.skipped);
+      bits.push('跳过了 ' + sk);
+    }
+    if (f.note) bits.push(f.note);
+    if (f.error) bits.push('失败：' + f.error);
+    parts.push(`${f.name || '本机文件'}：${bits.join('，') || '已读入上下文'}`);
+  });
   return parts.length ? '\n\n' + parts.join('　') : '';
 }
 
-async function sendMsg() {
-  const text = input.value.trim();
-  if (!text) return;
-  addMsg('user', text);
+async function sendMsg(textOverride = '', readPath = '') {
+  const text = textOverride || input.value.trim();
+  if (!text) { hint('先在输入框里写一句话再发送', false); return; }
+  if (!llmReady()) { hint('模型 Key 未配置，暂时不能对话（详见页首能力状态）', false); return; }
+  const message = readPath ? '读一下这份文件：' + readPath : text;
+  addMsg('user', message);
   input.value = '';
   send.disabled = true;
   const loading = addMsg('bot', '思考中……');
   try {
+    const body = {
+      message: message, session_id: sid,
+      use_rag: document.getElementById('use_rag').checked,
+      use_search: document.getElementById('use_search').checked,
+    };
+    if (readPath) body.read_path = readPath;
     const resp = await fetch('/chat', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({
-        message: text, session_id: sid,
-        use_rag: document.getElementById('use_rag').checked,
-        use_search: document.getElementById('use_search').checked,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await resp.json();
     if (!resp.ok) { loading.textContent = '出错：' + errHint(resp, data); }
     else {
-      sid = data.session_id;
-      loading.textContent = data.reply + describeSearchRefs(data.references);
+      if (data.session_id) sid = data.session_id;
+      updateSessionButtons();
+      if (data.pending_grant) {
+        pendingGrant = data.pending_grant;
+        grantRetry = { text, readPath, agent: false };
+        loading.textContent = data.reply;
+        showGrant(data.pending_grant);
+      } else {
+        loading.textContent = data.reply + describeSearchRefs(data.references);
+      }
+      if (data.grant_note) hint(data.grant_note, false);
     }
   } catch (e) {
     loading.textContent = '请求失败：' + e.message;
   }
-  send.disabled = false;
-  input.focus();
+  send.disabled = !llmReady();
+  if (!send.disabled) input.focus();
 }
 
-send.onclick = sendMsg;
-input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMsg(); });
+send.onclick = () => sendMsg();
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault(); sendMsg();   // 中文输入法选词时不误发
+  }
+});
 
-// ---- 多智能体：走 /agent/run ----
-document.getElementById('agentBtn').onclick = async () => {
-  const task = input.value.trim();
-  if (!task) { alert('先在输入框里写任务，再点「多智能体」'); return; }
+// 「读本机文件」：输入框里填完整路径，走同一个 /chat，只是多带 read_path。
+document.getElementById('readFileBtn').onclick = () => {
+  const path = input.value.trim();
+  if (!path) { hint('先在输入框里粘贴完整文件路径，再点「读本机文件」', false); return; }
+  if (!llmReady()) { hint('模型 Key 未配置，暂时不能解读本机文件', false); return; }
+  sendMsg('', path);
+};
+
+// ---- 多智能体：走 /agent/run（也能带本机路径，授权走同一条通道）----
+async function runAgent(taskArg = '', readPath = '') {
+  if (!llmReady()) {
+    hint('多智能体编排需要服务端配置 DEEPSEEK_API_KEY', false); return;
+  }
+  const task = taskArg || input.value.trim();
+  if (!task) { hint('先在输入框里写任务，再点「多智能体」', false); return; }
   addMsg('user', '[多智能体] ' + task);
   input.value = '';
   const loading = addMsg('bot',
     '编排中……（Planner → Executor → Reviewer，最多 32 次 LLM 调用）');
   try {
+    const body = {task};
+    if (readPath) body.read_path = readPath;
     const r = await fetch('/agent/run', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({task})
+      body: JSON.stringify(body)
     });
     const data = await r.json();
     if (!r.ok) {
       loading.textContent = '多智能体失败：' + errHint(r, data);
       return;
     }
-    let text = `任务：${data.task}\n\n`;
-    (data.results || []).forEach((x, i) => {
-      text += `第 ${i + 1} 步：${x.step}\n`;
-      text += `结果：${x.result || ''}\n`;
-      if (x.review) {
-        text += `审查：${x.review.passed ? '✅ 通过' : '❌ 打回'}`;
-        if (x.review.reason) text += ` — ${x.review.reason}`;
+    if (data.pending_grant) {
+      pendingGrant = data.pending_grant;
+      grantRetry = { text: task, readPath, agent: true };
+      loading.textContent = data.results_note || '这份文件需要你确认一次。';
+      showGrant(data.pending_grant);
+      return;
+    }
+    if (data.results_note) loading.textContent = data.results_note;
+    else {
+      let text = `任务：${data.task}\n\n`;
+      (data.results || []).forEach((x, i) => {
+        text += `第 ${i + 1} 步：${x.step}\n`;
+        text += `结果：${x.result || ''}\n`;
+        if (x.review) {
+          text += `审查：${x.review.passed ? '通过' : '打回'}`;
+          if (x.review.reason) text += ` — ${x.review.reason}`;
+          text += `\n`;
+        }
         text += `\n`;
-      }
-      text += `\n`;
-    });
-    text += `LLM 调用：${data.calls} 次，耗时 ${data.elapsed}s`;
-    loading.textContent = text;
+      });
+      text += `LLM 调用：${data.calls} 次，耗时 ${data.elapsed}s`;
+      loading.textContent = text;
+    }
+    if (data.grant_note) hint(data.grant_note, false);
   } catch (e) {
     loading.textContent = '多智能体失败：' + e.message;
   }
-};
+}
+document.getElementById('agentBtn').onclick = () => runAgent();
 
 // ---- 知识库入库弹窗 ----
 const ingestModal = document.getElementById('ingestModal');
@@ -248,6 +569,10 @@ const ingestText = document.getElementById('ingestText');
 const ingestSource = document.getElementById('ingestSource');
 
 document.getElementById('ingestBtn').onclick = () => {
+  if (!CAPS.reachable || !CAPS.rag) {
+    hint('知识库依赖未安装，无法入库：pip install -r requirements-rag.txt', false);
+    return;
+  }
   ingestText.value = '';
   ingestSource.value = '';
   ingestModal.classList.add('show');
@@ -256,6 +581,7 @@ document.getElementById('ingestBtn').onclick = () => {
 
 document.getElementById('ingestCancel').onclick = () => {
   ingestModal.classList.remove('show');
+  hint('已取消入库');
 };
 
 // 点背景关闭
@@ -265,11 +591,11 @@ ingestModal.onclick = (e) => {
 
 document.getElementById('ingestConfirm').onclick = async () => {
   const text = ingestText.value.trim();
-  if (!text) { alert('文本不能为空'); return; }
-  const source = ingestSource.value.trim() || 'web';
+  if (!text) { hint('要入库的文本不能为空', false); return; }
+  const source = ingestSource.value.trim() || 'manual';
   ingestModal.classList.remove('show');
 
-  const loading = addMsg('bot', '📚 入库中……（首次会下载模型，可能等 10-30 秒）');
+  const loading = addMsg('bot', '入库中……（首次会下载模型，可能等 10-30 秒）');
   try {
     const r = await fetch('/ingest/text', {
       method: 'POST',
@@ -278,15 +604,18 @@ document.getElementById('ingestConfirm').onclick = async () => {
     });
     const data = await r.json();
     if (!r.ok) {
-      loading.textContent = '❌ 入库失败：' + errHint(r, data);
+      loading.textContent = '入库失败：' + errHint(r, data);
+      hint('入库失败：' + errHint(r, data), false);
       return;
     }
     loading.textContent =
-      `✅ 入库成功：新增 ${data.chunks} 块，知识库共 ${data.total} 块。`;
+      `入库成功：新增 ${data.chunks} 块，知识库共 ${data.total} 块。`;
+    hint(`入库成功：新增 ${data.chunks} 块，已自动勾选「使用知识库」`);
     // 入库后自动勾选"使用知识库"，方便下一步直接提问
     document.getElementById('use_rag').checked = true;
   } catch (e) {
-    loading.textContent = '❌ 入库失败：' + e.message;
+    loading.textContent = '入库失败：' + e.message;
+    hint('入库失败：' + e.message, false);
   }
 };
 
@@ -295,6 +624,7 @@ let mediaRecorder = null, chunks = [];
 
 recordBtn.onmousedown = async (e) => {
   e.preventDefault();
+  if (recordBtn.disabled) return;   // 能力不可用时置灰，不再录一段必然失败的音频
   try {
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
     mediaRecorder = new MediaRecorder(stream);
@@ -304,8 +634,11 @@ recordBtn.onmousedown = async (e) => {
       stream.getTracks().forEach(t => t.stop());
       recordBtn.classList.remove('recording');
       const blob = new Blob(chunks, {type: 'audio/webm'});
-      if (blob.size < 100) return;
-      addMsg('user', '🎤 [语音]');
+      if (blob.size < 100) {
+        hint('录音太短或没有声音，请按住话筒再说一遍', false);
+        return;
+      }
+      addMsg('user', '[语音]');
       const loading = addMsg('bot', '识别中……');
       const fd = new FormData();
       fd.append('file', blob, 'voice.webm');
@@ -318,6 +651,7 @@ recordBtn.onmousedown = async (e) => {
         if (!r.ok) loading.textContent = '语音失败：' + errHint(r, data);
         else {
           sid = data.session_id;
+          updateSessionButtons();
           loading.textContent = data.reply +
             describeSearchRefs(data.references);
         }
@@ -343,6 +677,32 @@ recordBtn.onmouseleave = () => {
     mediaRecorder.stop();
   }
 };
+
+// ---- 新会话：接后端真实存在的 DELETE /sessions/{sid} ----
+$('newSessionBtn').onclick = async () => {
+  if (!sid) { hint('当前还没有会话，先发一条消息再开新会话', false); return; }
+  const old = sid;
+  try {
+    const r = await fetch('/sessions/' + encodeURIComponent(old),
+                          { method: 'DELETE', headers: authHeaders() });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      addMsg('bot', '新会话失败：' + errHint(r, d));
+      hint('新会话失败：' + errHint(r, d), false);
+      return;
+    }
+    sid = null;
+    updateSessionButtons();
+    addMsg('bot', '已开始新会话，之前的对话上下文不再带入。');
+    hint('已开始新会话，本页不再带入之前的上下文');
+  } catch (e) {
+    addMsg('bot', '新会话失败：' + e.message);
+    hint('新会话失败：' + e.message, false);
+  }
+};
+
+// 页面一打开就按真实能力渲染控件，别让用户先踩一遍 500/503
+loadCapabilities();
 </script>
 </body>
 </html>

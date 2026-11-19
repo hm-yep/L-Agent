@@ -19,11 +19,55 @@ import time
 from framework import config
 from framework.core import Framework
 from ui.input_dialog import InputDialog, HistoryPanel
+from ui import theme
+from ui.icons import icon as stroke_icon
 from ui.sprite_manager import SpriteManager
 from ui.sound_manager import SoundManager
 from ui.preview_window import PreviewWindow
 from ui.ui_manager import BubbleWidget, InfoCardWidget, SettingsDialog, TrayIcon
 from framework.utils import logger
+
+
+def _flash_label(label, message, restore="", ms=2600):
+    """面板按钮点完给一句看得见的结果，几秒后自动清空。
+
+    用面板里独立的反馈标签，而不是复用统计标签：提醒/待办面板有 1~2 秒的
+    定时刷新，会把统计文案每秒重写一次，反馈会被立刻冲掉。
+    """
+    label.setText(message)
+
+    def _restore():
+        try:
+            label.setText(restore() if callable(restore) else restore)
+        except RuntimeError:
+            pass    # 面板已关闭，标签控件已销毁
+    QTimer.singleShot(ms, _restore)
+
+
+def _icon_button(text: str, name: str, color_key: str = "TEXT2",
+                 size: int = 15):
+    """面板按钮统一用线框图标，不再往按钮文字里塞彩色 emoji。"""
+    from PyQt5.QtWidgets import QPushButton
+    btn = QPushButton(text)
+    btn.setIcon(stroke_icon(name, theme.T(color_key), size))
+    return btn
+
+
+def _make_status(layout):
+    """在按钮行上方插一条专门显示操作结果的标签。"""
+    from PyQt5.QtWidgets import QLabel
+    label = QLabel("")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    return label
+
+
+def _confirm_action(parent, title, message):
+    """清空 / 删除类不可逆操作的统一确认框。"""
+    from PyQt5.QtWidgets import QMessageBox
+    return QMessageBox.question(
+        parent, title, message, QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No) == QMessageBox.Yes
 
 
 class PetWindow(QWidget):
@@ -391,13 +435,13 @@ class PetWindow(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("凌零的工作流模板")
-        dlg.setStyleSheet(self._TASK_PANEL_QSS)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         layout.setContentsMargins(18, 16, 18, 16)
 
-        tip = QLabel("一键工作流：选中后点「运行选中」（或双击），"
-                     "凌零会先拟计划给你确认，再自动逐步执行：")
+        hint = ("一键工作流：选中后点「运行选中」（或双击），"
+                "凌零会先拟计划给你确认，再自动逐步执行：")
+        tip = QLabel(hint)
         tip.setWordWrap(True)
         layout.addWidget(tip)
         listw = QListWidget()
@@ -407,13 +451,15 @@ class PetWindow(QWidget):
         def _refresh():
             listw.clear()
             for t in config.WORKFLOW_TEMPLATES:
-                item = QListWidgetItem(f"🚀 {t['name']}　—　{t['desc']}")
+                item = QListWidgetItem(f"{t['name']}　—　{t['desc']}")
+                item.setIcon(stroke_icon("play", theme.T("ACCENT"), 16))
                 item.setData(Qt.UserRole, t["name"])
                 listw.addItem(item)
 
         _refresh()
+        status = _make_status(layout)
         btns = QHBoxLayout()
-        run_btn = QPushButton("▶ 运行选中")
+        run_btn = _icon_button("运行选中", "play", "ACCENT_TEXT")
         close_btn = QPushButton("关闭")
         btns.addWidget(run_btn)
         btns.addStretch()
@@ -423,6 +469,7 @@ class PetWindow(QWidget):
         def do_run():
             row = listw.currentRow()
             if row < 0:
+                _flash_label(status, "注意：请先选中一个模板，再点「运行选中」")
                 return
             name = listw.item(row).data(Qt.UserRole)
             tpl = next((t for t in config.WORKFLOW_TEMPLATES
@@ -431,6 +478,8 @@ class PetWindow(QWidget):
                 dlg.close()
                 self.sound.play("click")
                 self.fw.send_command(tpl["command"])
+            else:
+                _flash_label(status, "注意：找不到这个模板，请重新选择")
 
         run_btn.clicked.connect(do_run)
         close_btn.clicked.connect(dlg.close)
@@ -455,6 +504,7 @@ class PetWindow(QWidget):
         for fact in self.fw.memory.facts:
             listw.addItem(fact)
         layout.addWidget(listw)
+        status = _make_status(layout)
         btns = QHBoxLayout()
         del_btn = QPushButton("删除选中")
         clear_btn = QPushButton("全部清空")
@@ -467,15 +517,31 @@ class PetWindow(QWidget):
 
         def do_del():
             row = listw.currentRow()
-            if row >= 0 and self.fw.memory.forget_fact(row) is not None:
+            if row < 0:
+                _flash_label(status, "注意：请先选中一条记忆")
+                return
+            if self.fw.memory.forget_fact(row) is not None:
                 listw.takeItem(row)
                 tip.setText(_tip_text())
+                _flash_label(status, "✓ 已删除这条记忆")
+            else:
+                _flash_label(status, "! 删除失败：这条记忆已不存在")
 
         def do_clear():
+            n = len(self.fw.memory.facts)
+            if not n:
+                _flash_label(status, "本来就没有记忆可清空")
+                return
+            if not _confirm_action(
+                    dlg, "清空长期记忆",
+                    "确定删除全部 %d 条长期记忆吗？此操作不可撤销。" % n):
+                _flash_label(status, "已取消，记忆未改动")
+                return
             self.fw.memory.facts.clear()
             self.fw.memory.save()
             listw.clear()
             tip.setText(_tip_text())
+            _flash_label(status, "✓ 已清空 %d 条记忆" % n)
 
         del_btn.clicked.connect(do_del)
         clear_btn.clicked.connect(do_clear)
@@ -522,6 +588,7 @@ class PetWindow(QWidget):
         refresh_timer.start(1000)
         _refresh()
 
+        status = _make_status(layout)
         btns = QHBoxLayout()
         del_btn = QPushButton("删除选中")
         close_btn = QPushButton("关闭")
@@ -532,8 +599,14 @@ class PetWindow(QWidget):
 
         def do_del():
             row = listw.currentRow()
-            if row >= 0 and self.fw.tasks.remove_reminder(row + 1) is not None:
+            if row < 0:
+                _flash_label(status, "注意：请先选中一条提醒")
+                return
+            if self.fw.tasks.remove_reminder(row + 1) is not None:
                 _refresh()
+                _flash_label(status, "✓ 已删除这条提醒")
+            else:
+                _flash_label(status, "! 删除失败：这条提醒已不存在")
 
         del_btn.clicked.connect(do_del)
         close_btn.clicked.connect(dlg.close)
@@ -541,7 +614,7 @@ class PetWindow(QWidget):
         dlg.show()
 
     def _show_todos(self):
-        """右键菜单：查看/管理待办清单（大字号大面板，一眼看清）"""
+        """右键菜单：查看/管理待办清单（大面板，一眼看清）"""
         from PyQt5.QtCore import QTimer as _QTimer
         from PyQt5.QtGui import QBrush, QColor
         from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QListWidget,
@@ -550,17 +623,6 @@ class PetWindow(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("凌零的待办")
-        dlg.setStyleSheet(
-            "QDialog { background-color: #fffaf0; }"
-            "QLabel { font-size: 19px; color: #3a2d20; }"
-            "QListWidget { font-size: 22px; color: #3a2d20;"
-            "  background-color: #fffdf8; border: 1px solid #e8b96a;"
-            "  border-radius: 10px; padding: 10px; outline: none; }"
-            "QListWidget::item { padding: 10px 6px; }"
-            "QPushButton { font-size: 19px; padding: 9px 22px;"
-            "  background-color: #ffe9c8; border: 1px solid #e0a95f;"
-            "  border-radius: 8px; color: #7a4a1f; }"
-            "QPushButton:hover { background-color: #ffd9a0; }")
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -585,7 +647,9 @@ class PetWindow(QWidget):
             for i, t in enumerate(self.fw.tasks.todos):
                 item = QListWidgetItem()
                 if t["done"]:
-                    item.setText(f"✅ {t['text']}　（已完成）")
+                    item.setText(f"{t['text']}　（已完成）")
+                    item.setIcon(stroke_icon(
+                        "check-circle", theme.T("GOOD"), 16))
                     item.setForeground(QBrush(QColor(160, 150, 135)))
                     item.setData(Qt.UserRole, (i + 1, None))
                 else:
@@ -608,10 +672,11 @@ class PetWindow(QWidget):
         refresh_timer.start(2000)
         _refresh()
 
+        status = _make_status(layout)
         btns = QHBoxLayout()
-        done_btn = QPushButton("✔ 完成选中")
-        del_btn = QPushButton("🗑 删除选中")
-        clear_btn = QPushButton("🧹 清理已完成")
+        done_btn = _icon_button("完成选中", "check", "GOOD")
+        del_btn = _icon_button("删除选中", "trash")
+        clear_btn = _icon_button("清理已完成", "x-circle")
         close_btn = QPushButton("关闭")
         btns.addWidget(done_btn)
         btns.addWidget(del_btn)
@@ -623,23 +688,38 @@ class PetWindow(QWidget):
         def do_done():
             row = listw.currentRow()
             if row < 0:
+                _flash_label(status, "注意：请先选中一条待办")
                 return
             data = listw.item(row).data(Qt.UserRole)
-            if data and data[1] \
-                    and self.fw.tasks.complete_todo(data[1]) is not None:
+            if not data or not data[1]:
+                _flash_label(status, "这条已经是完成状态了")
+                return
+            if self.fw.tasks.complete_todo(data[1]) is not None:
                 _refresh()
+                _flash_label(status, "✓ 已标记完成")
+            else:
+                _flash_label(status, "! 操作失败：待办已变化，请重试")
 
         def do_del():
             row = listw.currentRow()
             if row < 0:
+                _flash_label(status, "注意：请先选中一条待办")
                 return
             data = listw.item(row).data(Qt.UserRole)
             if data and self.fw.tasks.remove_todo(data[0]) is not None:
                 _refresh()
+                _flash_label(status, "✓ 已删除这条待办")
+            else:
+                _flash_label(status, "! 删除失败：待办已变化，请重试")
 
         def do_clear():
+            done = len(self.fw.tasks.todos) - len(self.fw.tasks.open_todos())
+            if not done:
+                _flash_label(status, "没有已完成的待办可清理")
+                return
             self.fw.tasks.clear_done()
             _refresh()
+            _flash_label(status, "✓ 已清理 %d 条已完成待办" % done)
 
         done_btn.clicked.connect(do_done)
         del_btn.clicked.connect(do_del)
@@ -647,19 +727,6 @@ class PetWindow(QWidget):
         close_btn.clicked.connect(dlg.close)
         dlg.resize(780, 660)
         dlg.show()
-
-    # 交付/日志面板共用的样式（与待办面板同一套大字风格）
-    _TASK_PANEL_QSS = (
-        "QDialog { background-color: #fffaf0; }"
-        "QLabel { font-size: 19px; color: #3a2d20; }"
-        "QListWidget { font-size: 21px; color: #3a2d20;"
-        "  background-color: #fffdf8; border: 1px solid #e8b96a;"
-        "  border-radius: 10px; padding: 10px; outline: none; }"
-        "QListWidget::item { padding: 9px 6px; }"
-        "QPushButton { font-size: 19px; padding: 9px 22px;"
-        "  background-color: #ffe9c8; border: 1px solid #e0a95f;"
-        "  border-radius: 8px; color: #7a4a1f; }"
-        "QPushButton:hover { background-color: #ffd9a0; }")
 
     def _show_deliveries(self):
         """右键菜单：查看/打开凌零交付过的文件（可验收的工作成果）"""
@@ -670,7 +737,6 @@ class PetWindow(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("凌零的交付")
-        dlg.setStyleSheet(self._TASK_PANEL_QSS)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -687,7 +753,7 @@ class PetWindow(QWidget):
         layout.addWidget(tip)
         listw = QListWidget()
         listw.itemDoubleClicked.connect(
-            lambda item: self._open_path(item.data(Qt.UserRole)))
+            lambda item: self._open_path(item.data(Qt.UserRole), status))
         layout.addWidget(listw, 1)
 
         def _refresh():
@@ -695,8 +761,9 @@ class PetWindow(QWidget):
             for d in self.fw.tasks.deliveries:
                 lt = time.localtime(d.get("ts", 0))
                 item = QListWidgetItem(
-                    f"📄 {d['name']}　（{kind_label.get(d.get('kind'), '文件')}"
+                    f"{d['name']}　（{kind_label.get(d.get('kind'), '文件')}"
                     f"，{time.strftime('%m-%d %H:%M', lt)}）")
+                item.setIcon(stroke_icon("file-text", theme.T("TEXT2"), 16))
                 item.setData(Qt.UserRole, d.get("path"))
                 listw.addItem(item)
             if not self.fw.tasks.deliveries:
@@ -706,9 +773,10 @@ class PetWindow(QWidget):
             tip.setText(_tip_text())
 
         _refresh()
+        status = _make_status(layout)
         btns = QHBoxLayout()
-        open_btn = QPushButton("📂 打开选中")
-        del_btn = QPushButton("🗑 删除记录")
+        open_btn = _icon_button("打开选中", "folder")
+        del_btn = _icon_button("删除记录", "trash")
         close_btn = QPushButton("关闭")
         btns.addWidget(open_btn)
         btns.addWidget(del_btn)
@@ -721,12 +789,18 @@ class PetWindow(QWidget):
             return listw.item(row).data(Qt.UserRole) if row >= 0 else None
 
         def do_open():
-            self._open_path(_selected_path())
+            self._open_path(_selected_path(), status)
 
         def do_del():
             row = listw.currentRow()
-            if row >= 0 and self.fw.tasks.remove_delivery(row + 1) is not None:
+            if row < 0:
+                _flash_label(status, "注意：请先选中一条交付记录")
+                return
+            if self.fw.tasks.remove_delivery(row + 1) is not None:
                 _refresh()
+                _flash_label(status, "✓ 已删除这条交付记录")
+            else:
+                _flash_label(status, "! 删除失败：记录已变化，请重试")
 
         open_btn.clicked.connect(do_open)
         del_btn.clicked.connect(do_del)
@@ -734,14 +808,31 @@ class PetWindow(QWidget):
         dlg.resize(780, 620)
         dlg.show()
 
-    def _open_path(self, path):
-        """用系统默认程序打开文件（存在才动）"""
+    def _open_path(self, path, label=None):
+        """用系统默认程序打开交付文件；成功、没选中、文件丢失都有反馈。"""
         import os as _os
-        if path and _os.path.exists(path):
-            try:
-                _os.startfile(path)     # noqa: S606 Windows 专用
-            except OSError as e:
-                logger.warning(f"[Deliveries] 打开失败: {e}")
+
+        def _say(msg):
+            if label is not None:
+                _flash_label(label, msg)
+            else:
+                self.tray.showMessage("凌零 · 交付", msg,
+                                      TrayIcon.Information, 3000)
+
+        if not path:
+            _say("注意：请先选中一份交付记录")
+            return False
+        if not _os.path.exists(path):
+            _say("注意：文件已不在原位置：%s" % path)
+            return False
+        try:
+            _os.startfile(path)     # noqa: S606 Windows 专用
+        except OSError as e:
+            logger.warning(f"[Deliveries] 打开失败: {e}")
+            _say("注意：打开失败：%s" % e)
+            return False
+        _say("✓ 已在默认程序打开：%s" % _os.path.basename(str(path)))
+        return True
 
     def _show_worklog(self):
         """右键菜单：凌零的工作日志（数字员工做过的事，按时间流水）"""
@@ -751,7 +842,6 @@ class PetWindow(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("凌零的工作日志")
-        dlg.setStyleSheet(self._TASK_PANEL_QSS)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -779,8 +869,9 @@ class PetWindow(QWidget):
             tip.setText(_tip_text())
 
         _refresh()
+        status = _make_status(layout)
         btns = QHBoxLayout()
-        clear_btn = QPushButton("🧹 清空日志")
+        clear_btn = _icon_button("清空日志", "x-circle")
         close_btn = QPushButton("关闭")
         btns.addWidget(clear_btn)
         btns.addStretch()
@@ -788,9 +879,19 @@ class PetWindow(QWidget):
         layout.addLayout(btns)
 
         def do_clear():
+            n = len(self.fw.tasks.worklog)
+            if not n:
+                _flash_label(status, "工作日志本来就是空的")
+                return
+            if not _confirm_action(
+                    dlg, "清空工作日志",
+                    "确定清空全部 %d 条工作记录吗？此操作不可撤销。" % n):
+                _flash_label(status, "已取消，日志未改动")
+                return
             self.fw.tasks.worklog = []
             self.fw.tasks.save()
             _refresh()
+            _flash_label(status, "✓ 已清空 %d 条工作记录" % n)
 
         clear_btn.clicked.connect(do_clear)
         close_btn.clicked.connect(dlg.close)
@@ -827,6 +928,8 @@ class PetWindow(QWidget):
             from ui.workspace_window import WorkspaceWindow
             self.workspace = WorkspaceWindow(self.fw)
             self.workspace.settings_requested.connect(self.show_settings)
+            # 「文件 → 退出程序」要真退出，不能只是发一个没人接的信号
+            self.workspace.quit_requested.connect(self.quit_app)
         self.workspace.open_workspace()
 
     def show_preview(self):

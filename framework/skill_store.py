@@ -25,13 +25,15 @@ from framework.utils import app_data_dir, logger
 
 # 允许进技能的动作：参数是"用户会说的话"或"用户给的文件"，重放不依赖模型再创作
 SKILL_SAFE = {
-    "set_volume", "open_app", "web_search", "read_doc", "analyze_data",
-    "todo_add", "todo_done", "remind", "remember", "screenshot",
+    "set_volume", "open_app", "web_search", "read_doc", "list_dir",
+    "analyze_data", "todo_add", "todo_done", "remind", "remember",
+    "screenshot",
 }
 
 # 禁止进技能的动作 + 一句为什么（拒收时如实说给用户听）
 SKILL_REFUSED = {
     "create_doc": "那份文档的内容是我上次替你写的，原样重放等于把旧报告再发一遍",
+    "edit_doc": "改写文件会动你的原件，重放一次就改一次——这种事我不替你重复",
     "show_plan": "计划是当时那件事的计划，不该被当成固定流程",
     "run_workflow": "工作流会另起一整轮任务，不该套进技能里",
     "shutdown": "关机/重启/锁屏永远不进技能：重放一次就动一次真机器",

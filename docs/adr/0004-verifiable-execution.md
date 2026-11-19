@@ -41,7 +41,7 @@
 
 ### 3. 副作用契约与「撤销是对合」的证明
 
-`framework/effect_spec.py` 给 30 个动作各写一份显式副作用契约：`observables` / `reversible` / `idempotent` / `inverse` / `pre` / `post` / `reason`。`validate_specs()` 与 `action_registry` / `effect_journal` / `REQUIRED_PARAMS` 交叉校验，新增动作漏写契约会在契约检查里失败；`check_pre` / `check_post` 是运行时断言，默认只记录不阻断（`EFFECT_SPEC_STRICT=False`）。
+`framework/effect_spec.py` 给 32 个动作各写一份显式副作用契约：`observables` / `reversible` / `idempotent` / `inverse` / `pre` / `post` / `reason`。`validate_specs()` 与 `action_registry` / `effect_journal` / `REQUIRED_PARAMS` 交叉校验，新增动作漏写契约会在契约检查里失败；`check_pre` / `check_post` 是运行时断言，默认只记录不阻断（`EFFECT_SPEC_STRICT=False`）。
 
 `involution_check()` 是属性测试，不是示例：用 `random.Random(seed)` 的固定种子生成随机世界与随机可撤动作序列，用纯假手执行 `apply_ops(inverse_ops(diff(before, after)), api)`，逐组用 `world_digest` 校验回退后的状态哈希与 `before` 一致，返回 `{"trials", "passed", "failed", "seed"}`；`failed == 0` 就是「撤销是对合」的可复现证据。它不碰真手、不联网、不调模型，因此能进单测与契约检查。
 
@@ -69,7 +69,7 @@ python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html
 ## 可验证方式
 
 - `python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html`：按轮查看事件、哈希链与失败高亮；
-- `python tools/check_contracts.py`：41 项契约检查（含「30 个动作的副作用契约完备」「轨迹/偏好/进化/计划图模块可用」「主链路接入 token」「三份文档的 pytest 数字一致」），实测 41/41 通过；
+- `python tools/check_contracts.py`：41 项契约检查（含「32 个动作的副作用契约完备」「轨迹/偏好/进化/计划图模块可用」「主链路接入 token」「三份文档的 pytest 数字一致」），实测 41/41 通过；
 - `pytest -q`：404 passed / 1 skipped，其中 `tests/test_adaptive_integration.py` 覆盖端到端接线 8 项；
 - `python tools/benchmark.py`：学习前后对照，见 [ADR 0003](0003-preference-and-evolution.md)；
 - `python main.py --selftest`：启动冒烟 35/35 通过。

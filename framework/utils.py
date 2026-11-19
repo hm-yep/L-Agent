@@ -134,3 +134,24 @@ def normalize_intent(text: str) -> str:
     """
     return re.sub(r"[\s，。！？、,.!?；;:：“”\"'~～]", "",
                   (text or "").strip()).lower()
+
+
+_BLOCK_TAG = re.compile(r"</?(p|div|br\s*/?|li|ul|ol|h[1-6])[^>]*>", re.I)
+_ANY_TAG = re.compile(r"<[^>]{1,200}>")
+
+
+def plain_text(text: str) -> str:
+    """把回复里的 HTML 标签压成纯文本：块级标签换行，内联标签删掉。
+
+    QLabel 默认会自动识别富文本，标签字符不显示却仍被算进气泡宽度，
+    实测就会偏大、排版也跟着错。工作台气泡、桌宠气泡、历史面板共用这
+    一份，保证三处看到同一句话。
+    """
+    if "<" not in (text or ""):
+        return text or ""
+    from html import unescape
+    out = _BLOCK_TAG.sub("\n", text)
+    out = _ANY_TAG.sub("", out)
+    out = unescape(out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()

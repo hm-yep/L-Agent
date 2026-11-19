@@ -11,12 +11,21 @@
 
 # ---------- 桌面 UI ----------
 PyQt5>=5.15,<6
+# 工作台「网页调试台」页内嵌用；只影响桌面端，API-only 镜像不用装
+PyQtWebEngine>=5.15,<6
 Pillow>=10.0,<12
 
 # ---------- 文档工厂 ----------
 python-pptx>=0.6,<2
 python-docx>=1.1,<2
 openpyxl>=3.1,<4
+
+# ---------- 本机文件读取（framework/file_reader.py）----------
+# 文本型 PDF 抽文字层；扫描件没文字层会如实说「要读得走视觉模型」，不硬解。
+pypdf>=5.0,<7
+# 老格式 .doc/.xls 走本机 WPS/Office 的 COM 接口转文本。装不上也能跑：
+# 缺 pywin32 时 read_legacy_office 返回「本机没有可用的接口」，不会抛异常。
+pywin32>=306,<312; sys_platform == "win32"
 
 # ---------- 数据分析 ----------
 pandas>=2.0,<3

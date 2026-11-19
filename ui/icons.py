@@ -9,6 +9,7 @@
 from PyQt5.QtCore import QByteArray, QSize
 from PyQt5.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
+from PyQt5.QtWidgets import QLabel
 
 # 每个图标是 24x24 viewBox 内的 SVG 子元素（fill=none + stroke，统一描边）。
 _PATHS = {
@@ -69,6 +70,35 @@ _PATHS = {
             '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" '
             'y2="3"/>',
     "clock": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    # 本机访问授权页：盾牌 = 这次会话放开了哪些本机路径
+    "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+    # 浮层卡片（授权卡 / 计划卡）：同样是线框，不拿彩色 emoji 当图标
+    "unlock": '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>'
+              '<path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+    "timer": '<line x1="10" y1="2" x2="14" y2="2"/>'
+             '<line x1="12" y1="14" x2="12" y2="10"/>'
+             '<circle cx="12" cy="14" r="8"/>',
+    "clipboard": '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 '
+                 '0 1-2-2V6a2 2 0 0 1 2-2h2"/>'
+                 '<rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>',
+    "check-circle": '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>'
+                    '<polyline points="22 4 12 14.01 9 11.01"/>',
+    "check": '<polyline points="20 6 9 17 4 12"/>',
+    "play": '<polygon points="5 3 19 12 5 21 5 3"/>',
+    "x": '<line x1="18" y1="6" x2="6" y2="18"/>'
+         '<line x1="6" y1="6" x2="18" y2="18"/>',
+    "folder": '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 '
+              '0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+    "file-text": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 '
+                 '0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'
+                 '<line x1="16" y1="13" x2="8" y2="13"/>'
+                 '<line x1="16" y1="17" x2="8" y2="17"/>',
+    "robot": '<rect x="4" y="8" width="16" height="12" rx="2"/>'
+             '<line x1="12" y1="4" x2="12" y2="8"/>'
+             '<circle cx="12" cy="3" r="1"/>'
+             '<line x1="9" y1="13" x2="9" y2="13.01"/>'
+             '<line x1="15" y1="13" x2="15" y2="13.01"/>'
+             '<line x1="9" y1="17" x2="15" y2="17"/>',
     # ---- 底部命令栏 ----
     "git-branch": '<line x1="6" y1="3" x2="6" y2="15"/>'
                   '<circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>'
@@ -133,3 +163,19 @@ def icon(name: str, color: str, size: int = 18) -> QIcon:
     ic = QIcon(pix)
     _CACHE[key] = ic
     return ic
+
+
+def pixmap(name: str, color: str, size: int = 18) -> QPixmap:
+    """给 QLabel 用的线框图标：按逻辑尺寸取图，高分屏仍走 2x 超采样。"""
+    return icon(name, color, size).pixmap(size, size)
+
+
+def icon_label(name: str, color: str, size: int = 18,
+               object_name: str = None) -> QLabel:
+    """浮层里当装饰图标用的 QLabel（不参与布局拉伸）。"""
+    lab = QLabel()
+    if object_name:
+        lab.setObjectName(object_name)
+    lab.setPixmap(pixmap(name, color, size))
+    lab.setFixedSize(size, size)
+    return lab

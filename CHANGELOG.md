@@ -2,6 +2,287 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-18] · 执行轨迹收进设置页：工程面板不该占用户的导航位
+
+> 用户发来截图：左侧导航第三项就是「执行轨迹」，整页是轮次 / 事件 / 动作 / 失败 / token 的表格，
+> 原话是「这个界面不太适合直接显示到前端界面」，要求把它藏进设置里。
+
+### 变更
+
+- **导航 8 项收成 7 项**：`HIDDEN_IN_NAV = ("trace",)`。页面本身没删，仍在 `QStackedWidget` 里
+  占着原下标（`_nav_buttons` 用 `None` 补齐对齐，否则 `switch_page(3)` 会点到别人的按钮）。
+- **关于页新增入口**：「执行轨迹（工程面板）」卡片给一句人话摘要（已记录几轮 / 失败率，
+  或「还没有记录」/「子系统当前关闭」）+ 一个「打开执行轨迹」按钮；时间线导出仍在那页里。
+- **跳页不再写死下标**：新增 `page_index(key)`。顺手修掉一个真 bug——「关于 → 关于与状态」
+  菜单项写的是 `switch_page(5)`，点开的一直是「本机访问」页，而且不会报错。
+- **切到隐藏页时整组导航取消选中**：互斥组要先 `setExclusive(False)` 才能全不选，
+  否则顶栏写着「执行轨迹」、左边却还亮着上一项。
+
+### 验证
+
+- 新增 3 条单测：7 个页签且切到轨迹页无高亮（回到普通页恢复）、关于页按钮真能跳、
+  菜单「关于与状态」打开的是关于页。
+- 契约 101 → **103**：`执行轨迹不占导航位、入口收进关于页`、`工作台跳页不写死下标`。
+- 文档：README / 产品功能介绍 / QUICK_START / 面试手册统一为「八页、导航七项」；
+  顺手把「第 8 页内嵌网页台」「第 7 页本机访问」这类页码写法改成按名字说——
+  页序早就漂了（网页台其实是第 7 页、关于页是第 8 页），数字一旦写进文档就会静静说谎。
+
+## [2026-11-18] · 偏好从「认关键词」升级到「听得懂话」：每 3 轮让模型归纳一次
+
+> 用户问：它到底怎么知道我的偏好？我说「我是做财务的，别跟我讲实现细节」，它记不住。
+> 查下来：规则层确实是自动的，但只认 6 类固定句式，开放式偏好一条都学不到——
+> 不是要用户手动指定，是「自动」的覆盖面太窄。
+
+### 新增
+
+- **`PreferenceStore.observe_batch()`**：每 3 轮把最近 8 条对话交给模型抽开放式偏好，
+  与规则层写入同一个 `preferences.json`；`source` 字段区分「规则命中 / 模型归纳」。
+- **原话引用校验**（`parse_llm_preferences`）：模型返回的每条偏好必须附一句用户原话，
+  比对前去空白逐字匹配；查无实据、少于 4 字、key 不合法、value 超 120 字的一律丢弃。
+  这是这一层唯一的防幻觉手段——宁可漏，不能编。
+- **异步 + 单飞**：`Framework._maybe_llm_preferences()` 在后台线程跑，`_pref_llm_busy`
+  保证同一时刻最多一个在途请求；没配 API Key 时连轮次计数都不走。
+- **两个能力开关**：`PREFERENCE_LLM`（自动归纳）与 `PREFERENCE_PANEL`（界面是否显示）。
+
+### 变更
+
+- **偏好页默认只显示一句说明**：偏好继续在后台学、继续影响回复，但不在界面上摊开；
+  用户去「关于与设置」打开「在界面上显示偏好」才看到明细与删除按钮（用户明确要求）。
+- 偏好表格新增「来源」列（`规则命中` / `模型归纳`）；老落盘文件没有该字段时按规则命中显示。
+- 关于页开关从 5 个变 7 个；`CAPABILITY_KEYS` 同步增加两个落盘键。
+- 规则层与模型层共用 `_merge_items()` 合并逻辑，两套「改主意」语义不会再分叉。
+
+### 验证
+
+- `pytest -q`：549 passed / 1 skipped（新增 16 条：引用校验 8、合并与冲突 2、
+  异步调度 2、UI 显隐 1、提示词去英文 key 1、层级去重 1、异常吞掉 1）；
+  `tools/check_contracts.py`：96/96。
+- 规则层原有 56 条用例全绿，证明抽公共合并函数没有改变旧行为。
+
+## [2026-11-18] · 工作台第 8 页内嵌网页台：从来没生效过的那次启动
+
+> 用户发来截图：第 8 页写着「这个环境没有安装 PyQtWebEngine，请执行 pip install」。查下去发现包装着（5.15.6），这句话是假话，而这个功能在**每一次正常启动**里都没生效过。
+
+### 修复
+
+- **`AA_ShareOpenGLContexts` 没在 `QApplication` 之前设**：PyQt5 只靠这个进程级属性判断 WebEngine 的初始化时机，而工作台是懒加载——`from PyQt5.QtWebEngineWidgets import QWebEngineView` 必然发生在 `QApplication` 之后，于是每次都 `ImportError`，每次都降级成说明卡。`main.py` 现在在 `app = QApplication(sys.argv)` 之前设好该属性（449 行 / 451 行）。
+- **降级文案不分原因**：`_try_init_web_view()` 的 `except ImportError` 现在先用 `importlib.util.find_spec` 判包在不在——真没装才喊 `pip install PyQtWebEngine`；装着却起不来的话如实写「PyQtWebEngine 是装着的，但内嵌浏览器没能初始化：<异常原话>」并给出临时绕行。把两种修法完全相反的情况合并成一句，等于把能自查的缺陷变成让人重装环境的猜测。
+- **视图构造可能把进程干掉**：`QWebEngineView(...)` 的整个构造过程包进 `try`，失败只写占位文案 + 记日志。信号槽里的未捕获异常会被 PyQt5 直接 abort（退出码 127、不打 traceback），授权卡那条已经踩过一次。
+
+### 新增
+
+- `tests/test_workspace_webview.py`（8 项）：两条**开子进程按真实启动顺序**跑（先建 `QApplication` 再 import，不设属性真的 `IMPORTERROR`、设了真的起得来），一条断言 `main.py` 里那行**真的调用**排在 `QApplication(` 之前（搜的是 `QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts`，不是裸名字——只搜名字的话把代码删了测试照样绿），另外四条用假模块驱动三种降级形态与「网页台没起来时那个按钮真的把服务拉起」。
+- `main.py --selftest` 新增一项「网页台可内嵌」：此刻 `QApplication` 已存在，正好复现懒加载时机；真没装包记 SKIP，不算失败。
+- [ADR 0009](docs/adr/0009-qt-attribute-before-qapplication.md)：进程级 Qt 属性的设置时机、降级文案必须按原因分支、以及「顺序 bug 只能由顺序测试拦」。
+- `docs/QUICK_START.md` 断言 8 把「七个页签」改成实际的八个，并写清第 8 页要看到真网页（顶部大标题「凌零 · 智能体服务」），不是一段喊人装包的说明文字。
+
+### 变更
+
+- `tools/check_contracts.py` 新增 5 条：属性排在 `QApplication` 之前、降级文案分开两种原因（`pip install PyQtWebEngine` 在工作台源码里只许出现一次）、创建失败不许漏异常回 Qt 槽、启动冒烟里必须有「网页台可内嵌」这一项、第 8 页必须有真窗口截图证据（存在且 > 50 KB）；ADR 齐备那条扩到 0007/0008/0009。
+
+### 验证
+
+- `pytest -q`：533 passed / 1 skipped（共 534 条，与真实收集一致）；`tools/check_contracts.py`：96/96；`tools/test_agent_features.py`：157 通过 / 0 失败；`tools/eval_tasks.py`：38/38；`main.py --selftest`：36/36（离屏跳过 2 项布局几何断言）。上一条目里的 525 / 91 / 35 是当时口径，已被本条目取代。
+- 真窗口实跑（Windows 平台，非离屏）：切到第 8 页打印 `VIEW_CLASS QWebEngineView` / `PLACEHOLDER_HIDDEN True` / `FINAL_URL http://127.0.0.1:8000/` / `FINAL_TITLE 凌零 · 智能体服务`，截图存为 `output/grant_ui/workspace_web_after_fix_screen.png`（纯白像素占比 0.000）。同一次运行里改用 `QWidget.grab()` 抓出来的是整片纯白——Chromium 的合成层抓不到，那种图会说谎，所以抓取必须用 `primaryScreen().grabWindow(winId())`，并把这张证据截图本身做成一条契约。
+- 负向实跑：删掉 `main.py` 里那行属性调用后，`test_main_py_sets_the_attribute_before_creating_qapplication` 与契约「WebEngine 属性设在 QApplication 之前」同时变红（94/96），恢复后全绿。
+- 关于旧截图的教训：仓库里 `output/grant_ui/workspace_web_dark.png`（11-17）确实拍到第 8 页有网页，它没说谎，但什么也没证明——抓图脚本先 import 了 WebEngine 再建 `QApplication`，正好是这个属性唯一不必被设好的顺序。**验证方式本身不会失败，等于没有验证。**
+- 仍未处理：审计清单第二~六类（网页端第二个 `GrantService()` 静默 store、`core.request_doc_edit` 绕过 `check_read`、`.gitignore`/`.dockerignore`/Dockerfile `--host 0.0.0.0`、零演示媒体与 15 个未推送提交）按约定保持原样。
+
+## [2026-11-18] · 跨端授权链路：真实执行里断掉的四条
+
+> 用户点出：514 项测试全绿，但桌面 ⇄ 网页这条授权链路真跑起来是断的。这一轮只修第一类问题（链路真断），其余审计条目按约定不动。
+
+### 修复
+
+- **网页点「允许」被自己人改写成「拒绝」**：授权卡 `closeEvent` 对没答过的卡片补发一次 `deny`，而 `GrantService.answer()` 之后的卡片关闭也照发，于是网页刚落的 `file` 档被后来的 `deny` 覆盖、暂存的桌面动作链整条被丢。现在 `answer()` 返回 `newly`（这条请求是不是第一次被真正回答），`Framework.answer_grant` 只在 `newly` 时广播；`mark_resolved()` 有了调用方，已决卡片关闭不再补发拒绝。
+- **两条并发请求只有一张卡**：`GrantCard` 原来是单例复用，第二条请求把第一条覆盖掉，第一条永远答不了。现在 `ui/grant_card.py::popup(info, pet_x, pet_y, cascade=)` 一条请求一张卡，位置按 `cascade` 横向错开、放不下时向下错，`_grant_cards` 按 gid 记账，`shutdown()` 全部收掉。
+- **恢复队列不认请求归属**：原来只有一个 `self._grant_queue`，任何一条请求答复都会把它当成自己的队列恢复。现在改为 `self._grant_queues[gid]`，`_apply_grant_resolution` 只 pop 自己那份；`queue is None`（网页发起、桌面没暂存过）时**一步都不动桌面链路**；拒/超时候只丢自己那一步（`_note_plan_failure` + 归还其余），不再整条清空。
+- **点一下授权按钮桌宠就消失**：`_on_grant_resolved` 里用 `info.get("timed_out")` 读 `GrantService.get()` 的返回值，而它给的是 `PendingGrant` 对象不是字典 → `AttributeError`；PyQt 对槽函数里的未捕获异常直接 abort 整个进程（退出码 127、连 traceback 都不打）。现在按属性读 `info.timed_out`，并把槽包成「兜住异常也要如实播报」的外壳。
+
+### 变更
+
+- `ui/grant_card.py`：多卡级联定位；`framework/core.py`：新增 `_open_grant_card` / `_close_grant_card` / `_requeue_grant_actions` / `_apply_grant_resolution`。
+- `tools/check_contracts.py` 文档口径升级：`pytest` 数字不再只把三份文档互相比对（一起写错照样全绿，514 就是这么过期了 11 项），改为真跑一次 `pytest --collect-only` 拿客观条数，要求文档里 `passed + skipped` 与之相等；契约条数改为拿本次真实条数直接核三份文档与 README 目录树的「CI 契约检查（N 项）」，这条不计入条数、写错就红。
+
+### 验证
+
+- 新增 `tests/test_grant_chain.py`（11 项）：拿真实 `Framework` 进程 + 真实 `GrantCard` + 真实回环锚点跑链路，不再喂打桩应答。含「网页允许不被卡片关闭改写」「两张卡都能答（逆序回答且两个文件都真被读）」「网页请求不动桌面队列」「答过期 gid 吃不掉别人的队列」「槽里抛异常不 abort 进程」「`PendingGrant` 不许当字典读」等。
+- `pytest -q`：525 passed / 1 skipped（共 526 条，与真实收集一致）；`tools/check_contracts.py`：91/91；`tools/test_agent_features.py`：157 通过 / 0 失败；`tools/eval_tasks.py`：38/38；`main.py --selftest`：35/35（离屏跳过 2 项布局几何断言）。
+- README、产品功能介绍、docs/QUICK_START 的测试数字全部改为上面的实测值，并把 README 里自相矛盾的「CI 契约检查（53 项）」「87/87 通过 | 共 85 项」收敛成一个真实条数；断言 11 增加第 7 步（两张卡 + 关卡后网页点允许）。
+- 设计记录：[ADR 0007](docs/adr/0007-cross-end-shared-grant-channel.md) 补「四条真断与由此定下的两条不变量」。
+
+## [2026-11-17] · 桌面工作台与网页调试台合并为同一张界面
+
+> 用户点出：项目里本来就有网页版，但一直和桌面版分治——两套视觉、两个入口、连服务启动都是两份实现。这一轮把已有网页台并进工作台，不重建、不另抄一份前端。
+
+### 新增
+
+- `ui/workspace_window.py`：第 8 页「网页调试台」用 QWebEngineView 内嵌 `http://127.0.0.1:8000/`，加载的就是浏览器访问的那一个 URL。`api/static/index.html` 不再另做简化版；浏览器里的会话、本机文件授权（GrantAnchor 回环）与工作台完全共用。
+- `framework/api_service.py`：本地服务的唯一启动出处（`API_BASE` / `api_alive` / `start_api_in_thread`）。`python main.py --api` 与工作台内嵌页都从它取，端口占用时复用已在跑的那份，不再出现两份启动逻辑。
+- 网页端支持 `data-theme`：默认深色与桌面基调一致，工作台换肤时通过 JS 注入同步（QtWebEngine 下用 `setAttribute` 而非 `dataset.*` 赋值，已实测）。
+
+### 变更
+
+- `api/static/index.html`：样式表整体换成 `ui/theme.py` 同令牌的配色（深色为默认、浅色可切），次要按钮改成线框，顶部新增「切换主题」；视觉与工作台对齐，不再是浅蓝白另一套语言。
+- 内嵌浏览器懒加载：只有切到网页台时才创建 QWebEngineView；没装 PyQtWebEngine 或没起服务时给明确的降级说明与真能点的「启动本地服务」按钮（点了才在后台起，定时重试不阻塞 Qt），不偷偷拉进程、不让整个工作台起不来。
+- `requirements.txt` 增加 `PyQtWebEngine`；API-only 镜像（`requirements-api.txt`）保持不含 Qt。
+
+### 验证
+
+- `pytest -q`：514 passed / 1 skipped；契约 87/87（新增「同一 URL 同一启动出处」「内嵌页跟着换肤」两条）；网页脚本 `node --check` 通过；本地服务实测 `/` 返回新样式页。
+- 实窗截图 `output/grant_ui/workspace_web_dark.png`：工作台第 8 页内嵌网页成功，深色视觉与工作台一致。浅色主题用 JS 读回 `data-theme=light` 与 `body` 背景 `rgb(246,247,249)` 验证生效（QtWebEngine 离屏合成在换肤后抓不到新帧，属截图时序，不是功能问题）。
+
+## [2026-11-17] · 图标统一为线框风格
+
+> 用户反馈授权卡上那把黄色小锁是「廉价图标」，要只有边框的简约高级感。工作台导航早就是线框矢量，但浮层卡、面板按钮和网页调试台还留着 emoji，这一轮把剩下这些可见控件全部收进同一套描边图标。
+
+### 变更
+
+- `ui/icons.py`：新增 `unlock` / `timer` / `clipboard` / `check-circle` / `check` / `play` / `x` / `folder` / `file-text` / `robot` 十个线框图标，统一 24×24、`fill=none`、1.8px 描边、2x 超采样；新增 `pixmap()` / `icon_label()` 给 QLabel 用。
+- `ui/grant_card.py` / `ui/plan_card.py`：标题与倒计时的 emoji 换成线框图标，按钮文字不再带 `▶` / `✕` 前缀，图标与文字分行对齐；计划完成时标题图标切到 `check-circle`。
+- `ui/pet_window.py` / `ui/ui_manager.py` / `ui/input_dialog.py`：工作流模板、运行 / 完成 / 删除 / 清理 / 打开 / 记录按钮及设置标题、记录面板关闭键全部改为线框图标；`⚠️` 提示前缀改为「注意：」。
+- `api/static/index.html`：与桌面端同口径的内联 SVG symbol 精灵；授权头、麦克风、读文件 / 多智能体 / 入库 / 新会话按钮改线框，状态文案不再用彩色 emoji 前缀。
+
+### 验证
+
+- `tools/check_contracts.py` 新增「浮层与面板图标是线框矢量，不再用彩色 emoji」契约，总数 84 → 85；`pytest -q` 514 passed / 1 skipped，网页脚本 `node --check` 通过。
+
+## [2026-11-17] · F4：读完能直接作用（list_dir / edit_doc / 批量预算），工作台第 7 页跟上
+
+> 用户点出的痛点：F1–F3 上了授权之后，界面上一处看不见、也撤不掉；右键「修改文件（PPT/Word）」只有 UI 入口，模型发不出这个动作；同时「读任意路径」加了目录和压缩包之后，一次读多份会把资料缓冲撑爆，note 却什么都不说。这一轮把这三件事接上，并把动作数一次改齐到代码实际的 **32**。
+
+### 新增
+
+- `framework/action_registry.py` / `framework/action_parser.py` / `framework/core.py`：`list_dir`（列一层目录）与 `edit_doc`（模型可达的 PPT / Word 改写）进入动作全集与执行分发；`edit_doc` 的 `instruction` 兼容 `content` / `要求` / `怎么改` 等模型写法。动作数 **30 → 32**，连带 `effect_spec`、`PROMPT_ACTION_POOL`、`tests/test_action_registry.py`、契约检查与 README / 产品功能介绍 / QUICK_START / 架构说明 / ADR 0001 / ADR 0004 全部同步，不留「远端写 27、简历写 26+」这类别处口径。
+- `framework/file_reader.read_many()` + `Framework._do_batch_read()`：`read_doc` 可传 `paths` 数组一次读多份，**每份截 600 字、最多 4 份**，去重、坏路径单独记失败，超出的份数在 note 与气泡里明写「还剩 K 份没读」；每份单独进一条资料缓冲，避免单条 800 字上限把汇总偷偷截断。批量里只要有一份要授权或终态拒绝就整批停下，不留「偷偷读了能读的」这种半截成功。
+- `framework/effect_journal.py`：`RESTORABLE = {"edit_doc"}` 新的可还原分类。`edit_doc` 顺序固定为校验 → 三态判据 → **先 `copy2` 落副本** → 记 `file_edit_item` → 才允许提取全文并发给模型；副本失败就停下并如实说明。输出仍是 `_修改` 新文件，原件只读。`restorable` 在契约上满足 `reversible=True`，区别在逆操作来自副本而不是世界快照差集，见 [ADR 0008](docs/adr/0008-restorable-write-actions.md)。
+- 工作台第 7 页「本机访问」：表格列档位 / 路径 / 放开时间，展示 `describe_formats()` 生成的格式说明、最近读取证据卡与「全部撤销」；撤完判据只看空授权记录，同一路径必须重新弹卡。左侧导航分组计数增加「本机访问：放开 N 条」且本身可点。对话页气泡附读取证据卡：列了几项、读了几页、跳过什么、截到多少字、批量共几份实读几份。
+- `docs/adr/0007-cross-end-shared-grant-channel.md`、`docs/adr/0008-restorable-write-actions.md`：跨端通道与写动作可逆性分类的决策记录。
+
+### 变更
+
+- `README.md` / [产品功能介绍.md](产品功能介绍.md) / [docs/QUICK_START.md](docs/QUICK_START.md)：pytest 数字统一到 509；QUICK_START 由 9 条断言扩到 **12 条**（10 = 桌面授权三按钮 / file 不溢出 / 重启失效；11 = 浏览器 tree 落到桌面锚点；12 = 本机访问页可见可撤 + 证据卡）。命令栏占位改成带真实路径的例子。
+- `ui/theme.py` / `ui/icons.py`：第 7 页表格、空态、格式说明、证据卡与 `shield` 图标并入深浅两套 QSS 令牌，避免新控件在浅色主题下被裁切或长得像只读文字。
+- **决定：读取记录不进「我的交付」页**——读文件没有产出文件，进交付页会让那一页开始说谎；读取证据统一放「本机访问」。
+- 产品功能介绍里两处硬编码格式清单改为引用 `describe_formats()` 的当前判据表，格式文案只有一个出处：`path_guard` 的表 → 提示词 / 气泡 / 工作台 / 文档。
+
+### 验证
+
+- `pytest -q`：514 passed / 1 skipped（新增 `read_many` 预算 / 去重 / 坏路径、`paths` 解析、证据卡宽度与不裁切用例）；`tools/check_contracts.py`：87/87；`tools/test_agent_features.py`：157/157；`tools/eval_tasks.py`：38/38（修掉评测 C20 漏统计 `restorable` 新桶导致的假红，并加契约钉死）；`main.py --selftest`：35/37（离屏跳过 2 项几何断言）；网页前端 `node --check` 通过。
+- 实窗（`QT_QPA_PLATFORM=windows`）截图 6 张逐张核对：`output/grant_ui/` 下深色/浅色 × 对话页（读取证据卡）与本机访问页，以及授权卡两主题；自动断言 14 项宽高均不裁切。截图过程发现并修掉两个真实故障：连续刷新对话时旧气泡/证据卡以 `deleteLater()` 滞留造成叠影（改为先 `hide()` + `setParent(None)`），以及证据卡在水平布局里被挤成窄列（改为按字体度量定宽定高）。浮层卡在两套主题下都保持半透明深底，这是贴桌面时要压住壁纸的有意设计，不是漏换肤。
+
+## [2026-11-17] · F3：网页端与桌宠共用一条授权通道（不分治）
+
+> 前置核实：`main.py --api` 虽在同一进程跑 uvicorn，但 API 并不持有 `Framework`；README 与 Docker 还支持独立 `uvicorn api.server:app`，那是另一个没有 Qt 的进程。因此「共享单例」不成立，必须靠桌面锚点 + 回环通道实现不分治，这条结论直接决定了设计。
+
+### 新增
+
+- `framework/grant_anchor.py`：桌面进程起只监听 `127.0.0.1` 的回环小服务（标准库，无新依赖），把端口与**一次性令牌**写进本机发现文件 `grant_anchor.json`（不含任何路径）；网页端 `ask` / `answer` / `state` / `revoke` 四件事全部转交桌面那份 `GrantService`。令牌用 `secrets.compare_digest` 比对，每次启动重生成。
+- `api/server.py`：`ChatRequest` / `AgentRunRequest` 加 `read_path`；`ChatResponse` / `AgentRunResponse` 加 `pending_grant` 与 `grant_note`；新增 `POST /grant/{gid}`，只收 `file` / `tree` / `deny`，**继承 app 级 `require_access`**（配令牌必须带令牌，未配只接受回环），不是匿名可达的后门。自持模式下超时按拒的请求通过下一次响应的 `grant_note` 明说。
+- `api/static/index.html`：读本机文件按钮 + 授权确认条，三个按钮与桌面卡一一对应；`sendMsg` / `runAgent` 处理 `pending_grant` 并支持答完自动重试；`describeSearchRefs()` 渲染本地文件读取证据卡。
+- `tests/test_api_grant.py`：7 项跨端验收，含杀手级场景——浏览器点「允许整个文件夹」后桌面读同目录另一个文件不再弹卡。
+
+### 变更
+
+- 找不到锚点（桌宠没开 / Docker 里没有 Qt）时，网页端用**同一个 `GrantService` 类**自持：判定与状态机完全一致，授权只在网页端生效；绝不伪造「已授权」。设计取舍见 [ADR 0007](docs/adr/0007-cross-end-shared-grant-channel.md)。
+- 120 秒未答按**拒绝**处理并标记 `timed_out`，下一次响应说明是超时按拒，不伪装成用户主动拒绝。
+
+## [2026-11-17] · F2：桌面授权确认回路（三态判定接到真实按钮）
+
+> 上一版只交付了判据与读取层，用户还点不到确认卡。这一版把 `ask_grant()` / `answer_grant()` 做成唯一入口，卡片、动作队列、超时与撤销全部接到同一份状态机上。
+
+### 新增
+
+- `ui/grant_card.py`：三个按钮各带一行后果说明——「只读这一个」（只放这一份，同目录另一份还要再问）/「允许整个文件夹（本次会话）」（整棵子树）/「拒绝」；卡片明写「本次会话有效，重启失效」并有 120 秒倒计时，超时显示「已超时，按拒绝处理」。直接关卡等于拒绝。
+- `Framework.ask_grant()` / `answer_grant()` / `grant_state()` / `revoke_grants()` / `read_log()`：桌面卡与网页确认条都只走这两个入口；`grant` 时暂存 `_grant_queue`、停看门狗、立即返回不卡 Qt，用户答完恢复重跑。
+- `Framework._do_read_doc()` / `_do_analyze_data()` / `_do_list_dir()` / `_do_edit_doc()` 全部改走 `grant_service.check()` 三态；提示词与气泡里的格式清单改为 `describe_formats()` 动态生成。
+
+### 变更
+
+- 授权仍只有 `file` / `tree` 两档、只活在进程内存；敏感判定永远先于授权，`.ssh` / `.env` / 凭据即使点了允许也不读。
+- `tools/check_contracts.py`：新增三态、卡片三按钮、超时按拒、撤销真清空等防退化契约；全量 87/87 通过。
+
+## [2026-11-17] · 本机文件读取改成「三态判定 + 会话内授权」，并收出统一读取层
+
+> 需求是「要能读常用那些文件，任意路径的文件夹、文件，并直接作用在上面」，同时明确不分治：桌面与网页共用一条授权通道。这一步先做**判据与读取层**（用户还点不到确认卡片，桌面接线在下一步）。原来的两态判定（在根里＝读，不在＝拒）唯一的放开方式是把白名单改宽，那等于拆边界；所以判据改成三态，把「要不要放开这个路径」交给用户、并且限定在本次运行里。
+
+### 新增
+
+- `framework/grants.py`：会话内授权记录，只有两档——`file`（这一个文件；目录则只允许列它一层）与 `tree`（这个目录及整棵子树，即用户说的「完全访问」）。只增不持久化，`clear()` 一次全撤；归一化用 `normcase(realpath(abspath()))`，Windows 上换大小写、换正反斜杠、写相对路径都不会要求用户点两次；包含判定按路径段比对（`is_within`），不用字符串 `startswith`，否则 `D:\foo2` 会被判进 `D:\foo` 的子树。
+- `framework/file_reader.py`：统一读取层，把「一个路径」变成 `{ok, kind, text, note}`。分派到目录列举 / 纯文本与代码 / docx·pptx·xlsx / 文本型 PDF / 压缩包 / 老格式 `.doc|.xls`（借本机 WPS·Office COM 转文本）。三条硬约定：**永不抛异常**（损坏、加密、被占用、缺依赖都变成中文短句）、**不许空手报成功**（`ok=True` 而正文为空一律改判失败，空目录除外）、**截断与跳过必须写进 `note`**（只列前 200 项、只读前 40 页、只顺带读 12 个文本成员，用户看到的和实际进上下文的一致）。
+- `docs/adr/0006-session-path-grants.md`：为什么是三态而不是把白名单改宽、为什么敏感判定必须排在授权之前、为什么授权绝不落盘（`user_settings.json` 自己在白名单根下、又在敏感名单里——用一份可能被读走的文件保存读走文件的通行证），以及代价与边界。
+
+### 变更
+
+- `framework/path_guard.py`：`check_read(raw, grants=None)` 返回三态，判定顺序固定为 存在性 → 敏感 → 格式表 → 大小 → 根目录 → 授权记录；老接口 `validate_read_path()` 语义收窄为「只认静态白名单」（`grant` 仍返回 `ok=False`），网页入库与单测这些不弹确认的调用方不会因为引入授权就默认放行。格式表按用途拆成 `TEXT_EXTS`（新增 py / cpp / h / go / rs / java / ts / vue / sh / sql / ipynb 等代码与配置后缀）+ `OFFICE_EXTS` + `LEGACY_EXTS` + `PDF_EXTS` + `ARCHIVE_EXTS`，无后缀的 `Dockerfile` / `README` / `.gitignore` 走 `TEXT_NAMES`；能力文案 `describe_formats()` 从表生成，不再各处手写一句「目前支持 txt/md/csv」。
+- **修掉一个真实漏洞**：`is_sensitive()` 原先只检查 `parts[:-1]`，目录名本身是 `.ssh` 时不算敏感，列一层就能把私钥文件名与大小抄走；现在检查全部分段。
+- 压缩包成员只在内存里读、不落地解包：成员名先归一化并跳过 `..` 与绝对路径（zip slip），再过一次敏感表与二进制后缀表；单个 gz（非 tar）解开直读。图片与扫描型 PDF 明确不属于这一层——无文字层时返回「要读得走视觉模型」，不硬解也不静默返回空串。
+- `requirements.txt`：补上从未声明却已被使用的 `pypdf`（本机 PDF 文字层抽取），并显式列出老格式依赖 `pywin32`（`sys_platform == "win32"`；缺它时读取层如实降级）。
+- `tools/check_contracts.py`：新增 10 条本机文件读取契约（59 → 69）——格式判据只有一张表且文案是表的子集、三态判定只有一个实现、**敏感判定源码位置先于根目录与授权**、敏感分段检查覆盖全部分段、授权只有两档且不落盘（AST 检查只 import `os`、不含 `open(`）、包含判定按路径段、空手而归不算成功、读取层不抛异常、判据层不拖起 Qt、PDF/老格式依赖已声明。
+- 文档：README 目录结构与安全说明改写为三态判定口径并挂上 ADR 0006；三份文档数字统一到 493 / 69。
+
+### 隐私
+
+- 授权记录只存在于进程内存，重启即失效，不写 `user_settings.json`、不写 `data/`；`reason` 文案一律不含绝对路径，避免把本机目录结构回显给模型或日志。
+- 新增用例全部在 `tmp_path` 里现造文件；PDF 用例用标准库手搓两份真 PDF（有文字层 / 无文字层）而不是打桩，COM 路径在用例里于「起进程之前」就返回，不会拉起他的 WPS。
+
+### 验证
+
+- `pytest -q`：493 passed / 1 skipped（较上一版记录的 434 增 59 项：`tests/test_grants.py` 19 项、`tests/test_file_reader.py` 29 项、`tests/test_path_guard.py` 由 35 项扩到 46 项（其中 1 项在本机不能建符号链接时跳过））。重写而不是放宽：老的 6 条「白名单外一律拒」断言换成更强的三态不变量——没授权时根外**绝不 allow**、`..` 逃逸与指向根外的符号链接不继承根内放行、`file` 档不放开父目录、`tree` 档不溢出到兄弟目录、给了整树仍然读不到 `.ssh` 与 `user_settings.json`。
+- `tools/check_contracts.py`：69/69；`tools/test_agent_features.py`：157 通过 / 0 失败；`tools/eval_tasks.py`：38/38；`main.py --selftest`：35/35；`tools/test_settings_persistence.py`：17/17。
+- 本轮为判据与读取层交付，桌面气泡／网页确认条的接线在下一步（F2/F3），因此 README 的功能表暂未宣称「任意路径可读」。
+
+## [2026-11-17] · 深色专业工具风重构 + 关于页五个开关真的能点
+
+> 两件事连着做的：先把前端样式收到一个出处（`ui/theme.py` 设计令牌），再处理用户指出的「这几个按钮是摆设」——关于页那五行「当前开关」原本是**写成按钮样式的只读 `QLabel`**。第二件事比换控件难：光换成 `QPushButton` 只是把长相的谎撤掉，还要让翻牌真的改变程序行为，而本项目里「一个能力开没开」有两种读法（有的调用点每次读 `config.X`，有的只看子系统对象在不在场）。
+
+### 新增
+
+- `ui/theme.py`：全仓唯一的样式出处。DARK / LIGHT 两套调色板 + `SP`（4px 间距阶梯）/ `RD`（圆角）/ `DIM`（尺寸）/ `SZ`（字号阶梯 micro 11 → title 17）/ `WT`（字重），一份带 `__TOKEN__` 占位符的 `TEMPLATE` 由 `_sub()` 替换；`set_theme()` / `install(app)` 负责 `app.setStyleSheet()` 与全局字体安装，换肤时工作台、桌宠浮层、预览窗一起变。
+- `framework/core.py`：`CAPABILITY_STORES` + `_open_capability()` + `set_capability(attr, on)`。开 = 当场 `importlib` 建起对应 Store（建不起来只降级为 `None`，不拖垮主链路）；关 = 当场把对象撤掉；随后落盘，**落盘失败则 flag 与对象一起回滚**并如实提示「没写进配置文件」。
+- `framework/config.py`：`CAPABILITY_KEYS`（5 个开关的属性名 → JSON 键名，落盘与读回共用同一张表）；`save_user_settings()` 改为返回 `bool`；`apply_user_settings()` 按表把 5 个键读回来。
+- `docs/adr/0005-runtime-capability-switches.md`：为什么「关掉」实现为「把子系统对象撤场」而不是在每个调用点补 flag 判断，以及这样做的代价与边界。
+
+### 变更
+
+- `ui/workspace_window.py`：关于页「当前开关」五行由只读 `QLabel#statChip` 改为 `QPushButton#switchToggle`（可勾选、手型光标、悬停/按下变色、开启绿 / 关闭红），点一下即翻 `config` + 建/撤子系统 + 写 `%APPDATA%\DesktopPet\user_settings.json`，右下角状态栏回报结果；信号连 `clicked` 而非 `toggled`（程序重绘时 `setChecked` 不该被当成用户操作存盘）。开关行只建一次、刷新时原地重绘——先前用 `deleteLater()` 重建会让旧按钮在事件循环前留在对象树里，切两次页攒出 10 个点得着却看不见的按钮。删掉一份从未被调用的重复 `_refresh_status`。
+- 五套互不相认的配色（`_QSSTEMPLATE`、`ui/style.qss`、预览台内联三段、气泡、卡片）合并进 `theme.TEMPLATE`；`ui/pet_window.py`、`ui/plan_card.py`、`ui/input_dialog.py`、`ui/preview_window.py`、`ui/ui_manager.py` 全部改为读令牌，`main.py` 走 `theme.install(app)`。
+- 关于页卡片副标题与 `OPERATION_ROWS` 改为如实描述可点语义（「点开就开启、点关就关闭，立即生效并写进本机配置」），使用说明补上「关于页的五个能力开关」这一处可点区域。
+- `tools/check_contracts.py`：新增 6 条开关链路契约（属性名真实存在且可落盘、按钮而非只读标签、连 `clicked`、会建/撤对象、失败回滚、启动读回），并把「关于页操作说明」那条改成读 `OPERATION_ROWS` 这个唯一出处，两条字体契约改到重构后的真实出处（53 → 59；重构后曾自行变红 2 条，属检查口径没跟着改）。
+- 文档：README 桌面章节新增「关于页五个开关是可点控件」条目；`docs/QUICK_START.md` 扩为 9 条断言（断言 9 = 7 步手动验证这五个开关，含「关掉事件轨迹后轨迹不再增长」与「反复切页不攒重复按钮」）；三份文档数字统一到 434 / 59。
+
+### 隐私
+
+- 五个开关只写本机 `%APPDATA%\DesktopPet\user_settings.json` 里的 5 个布尔键（沿用原子写 + `chmod 600`），不写聊天内容；相关测试把 `_user_settings_path` 或 `APPDATA` 指到临时目录，不碰真实配置与 `data/`。
+
+### 验证
+
+- `pytest -q`：434 passed / 1 skipped（较上一版记录的 422 增 12 项。开关 5 项：可按按钮而非只读标签、点击翻 config 并落盘、不重启即改变行为、存盘失败整体回滚、下次启动读回同样的值；其余为样式与渲染用例：样式只有一个出处、无硬编码字号、气泡宽度实测不裁切、气泡纯文本与换行高度、模型标记拍平、裸 QWidget 窗口走窗口底色、卡片标题不被短路径压碎。）
+- `tools/check_contracts.py`：59/59；`tools/test_agent_features.py`：157 通过 / 0 失败；`tools/eval_tasks.py`：38/38；`main.py --selftest`：35/35；`tools/test_settings_persistence.py`：15/15（新增第 2.6 节子进程临时 `APPDATA` 的落盘—读回环）。
+- 实窗（`QT_QPA_PLATFORM=windows`）截图 20 张逐张核对深浅色六种页面与浮层，无文字裁切；真实点击两个开关后 `user_settings.json` 与状态栏文案一致。
+
+## [2026-11-17] · UI 控件与真实能力逐项对齐（清掉剩余摆设）
+
+> 用户再次指出「前端 UI 界面和项目上有的功能要符合好，有些按钮都是摆设」。全量核对桌面工作台与网页调试台约 100 个可点击控件后，把剩余的「点了没反应 / 名不副实 / 默认必失败」控件逐个处置：能接真实能力的接上，接不上的删掉或置灰并写明原因。
+
+### 变更
+
+- 桌面工作台 `ui/workspace_window.py`：
+  - 「检查更新」原本没有任何 `clicked` 接线，tooltip 还自认没有在线更新通道；改为「查看更新」，点击打开 GitHub Releases 页（真实可达），文案如实说明开源项目需手动拉取更新。
+  - 「新建对话」原本只切页 + 聚焦输入框，不清历史；新增 `MemorySystem.clear_history()`（只清对话记录，保留长期记忆 / 偏好），按钮接它并 `history_changed.emit()` 同步桌宠历史面板，清空前有确认框，避免误触。
+  - 「文件 → 退出程序」发出的 `quit_requested` 全仓库无人接收；在 `ui/pet_window.py` 补接 `quit_app`（真退出桌宠与托盘）。
+  - 关于页还停留在旧版界面：删掉「加号按钮 / @ 引用 / 分支 / 访问级别 / 模型」等已不存在的控件描述，改为逐项说明当前真实按钮；顶部铃铛 tooltip 改为「查看执行轨迹」。
+  - 删除死信号 `context_requested` 与死方法 `_quick`。
+- 预览组件调试台 `ui/preview_window.py` / `ui/input_dialog.py`：预览用的独立 InputDialog 里「历史记录」「工作台」两条信号没有接收者，新增 `set_aux_buttons_visible(False)` 在预览窗隐藏，只留真接通的输入 + 发送。
+- 网页调试台 `api/static/index.html`：新增页首能力状态条，加载时读 `/health`，按 `llm_key_configured` / `rag_available` / `search_key_configured` / `voice_available` 置灰不可用控件并写明缺什么；新增「重新检测」与「🧹 新会话」（接真实 `DELETE /sessions/{sid}`）；修中文输入法回车误发、入库 `source` 默认值与后端不一致。
+- 后端 `api/server.py`：`GET /` 静态页免令牌（否则 Docker 场景下页首令牌框永远不可达，其余接口照常鉴权）；`/health` 增加 `llm_key_configured` / `voice_available`；Whisper 依赖改用 `find_spec` 真探测，缺依赖返回明确 503 而不是含糊 500；`/agent/run` 无 Key 时回报可诊断文案。
+- 文档与契约：README 新增「网页调试台的按钮可用性」对照表并修正工作台布局描述；三份文档的 pytest / 契约数字同步；`tools/check_contracts.py` 新增 4 条防摆设回归契约（49 → 53）。
+
+### 验证
+
+- `pytest -q`：422 passed / 1 skipped（新增 14 项覆盖新建对话、更新按钮、退出菜单、关于页文案、预览窗按钮、health 能力字段、首页免令牌、语音 503、/voice/chat、无 Key 文案与调试台门禁）。
+- `tools/check_contracts.py`：53/53；`main.py --selftest`：35/35 通过。
+
 ## [2026-11-15] · 命令栏移除摆设控件（只留真接通的输入 + 发送）
 
 > 用户质疑「你做的功能和 UI 按钮链接好了吗，别做了功能但 UI 是摆设」。核实：主功能（输入 → `fw.send_command` → 气泡回显）真实接通；但底部命令栏抄参考图的一排小控件（分支 / 访问级别 / 模型 / sparkle / 麦克风 / 添加上下文）在本项目里没有对应能力，点了没反应，是纯摆设——模型下拉框里的「Hy4 / GLM-4.6V」甚至和项目实际用的 DeepSeek 对不上。

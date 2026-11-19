@@ -6,7 +6,7 @@ action_registry.validate() 保证的是「目录完整」（每个动作都归�
 依旧全绿。本模块给每个动作补一份可执行的契约（observables / reversible /
 inverse / pre / post），并在运行时做三件事：
 
-  * validate_specs()：把 30 份契约与真实实现（动作池、coverage、必填参数）
+  * validate_specs()：把 32 份契约与真实实现（动作池、coverage、必填参数）
     逐一比对。任何新增动作漏写 spec，这里立刻报出来，是 CI 卡口。
   * check_pre / check_post：执行前断言参数合法；执行后用 effect_journal.diff
     断言「声明的副作用确实被观测到」或「声明无副作用却没动世界」。误报可解释，
@@ -47,6 +47,8 @@ _VALID_DOC_TYPES = {v for group in _DOC_ALIASES.values() for v in group}
 
 _CLASS_REASON = {
     "reversible": "改动落在可观测面上，diff 能生成逆操作逐项回退",
+    "restorable": "改写前已落副本，撤销按账本把原件还原回原样"
+                  "（撤得回，但逆操作不来自五面快照 diff）",
     "blind": "有外部后果但五面快照看不见，无法生成逆操作（撤不回）",
     "no_effect": "只读或只改桌宠姿态/界面显示，不改动五面世界快照",
     "undo": "撤销动作本身，再记一笔账会套娃，跳过记账",
@@ -58,24 +60,31 @@ _REQUIRED_FIELDS = ("observables", "reversible", "idempotent", "inverse",
 
 def _spec(effect, observables=(), inverse=None, *, idempotent=False,
           params=(), reason="", pre="", post=""):
-    """构造一份契约。SPECS 的键显式写死 30 个，值由此填充以避免重复。"""
-    rev = effect == "reversible"
+    """构造一份契约。SPECS 的键显式写死 32 个，值由此填充以避免重复。"""
+    rev = effect in ("reversible", "restorable")
+    if not post:
+        if effect == "restorable":
+            post = "原件已落副本，按账本能还原回原样"
+        elif rev:
+            post = "声明的可观测面上应出现对应变化"
+        else:
+            post = "五面世界快照不应改变"
     return {
         "observables": list(observables),
         "reversible": rev,
         "idempotent": bool(idempotent),
         "inverse": inverse,
         "pre": pre or "必填参数齐全且取值合法",
-        "post": post or ("声明的可观测面上应出现对应变化" if rev
-                         else "五面世界快照不应改变"),
+        "post": post,
         "reason": reason or _CLASS_REASON[effect],
         "effect": effect,
         "params": list(params),
     }
 
 
-# 30 个动作的显式契约清单。新增动作必须在这里补一行，否则 validate_specs 报错。
-# observables 与 effect_journal._TOUCHES 一一对应；blind 逐条写清撤不回的原因。
+# 32 个动作的显式契约清单。新增动作必须在这里补一行，否则 validate_specs 报错。
+# observables 与 effect_journal._TOUCHES 一一对应；blind 逐条写清撤不回的原因；
+# restorable 的逆操作来自改写时写下的副本账本，不进五面快照。
 SPECS = {
     "show_bubble": _spec("no_effect", idempotent=True, params=["text"],
                          pre="text 非空"),
@@ -118,6 +127,13 @@ SPECS = {
     "web_search": _spec("no_effect", idempotent=True, params=["query"]),
     "read_doc": _spec("no_effect", idempotent=True, params=["path"],
                       pre="path 非空"),
+    "list_dir": _spec("no_effect", idempotent=True, params=["path"],
+                      pre="path 非空"),
+    "edit_doc": _spec("restorable", (), "restore_file",
+                      params=["path", "instruction"],
+                      pre="path 非空、instruction 非空，且文件是可改写的文档",
+                      reason="改写用户文件前已落副本，撤销能把原件还原回原样"
+                             "（撤得回，但逆操作来自副本账本，不是五面快照 diff）"),
     "analyze_data": _spec("reversible", ("deliveries",), "delete_file",
                           params=["path"], pre="path 非空"),
     "work_log": _spec("no_effect", idempotent=True),
@@ -146,7 +162,7 @@ def spec_for(action_name: str) -> dict:
 
 
 def validate_specs() -> list:
-    """把 30 份契约与真实实现逐一比对，返回中文问题描述（空 = 全部一致）。
+    """把 32 份契约与真实实现逐一比对，返回中文问题描述（空 = 全部一致）。
 
     检查：动作池基数与全覆盖、effect 分类与 coverage() 一致、observables 与
     effect_journal._TOUCHES 一致且只能来自 WORLD_KEYS、可逆动作必须有 inverse、
@@ -158,7 +174,7 @@ def validate_specs() -> list:
 
     actual = action_registry.all_actions()
     spec_names = set(SPECS)
-    expected_count = int(getattr(config, "EXPECTED_ACTION_COUNT", 30))
+    expected_count = int(getattr(config, "EXPECTED_ACTION_COUNT", 32))
 
     if len(actual) != expected_count:
         problems.append(f"动作池有 {len(actual)} 个动作，契约基准是 "
@@ -179,12 +195,14 @@ def validate_specs() -> list:
         problems.append(f"动作 {name} 没被 effect_journal 归类（unknown）")
 
     classified = {}
-    for key in ("reversible", "blind", "no_effect", "undo"):
+    for key in ("reversible", "restorable", "blind", "no_effect", "undo"):
         for name in cov.get(key, []):
             classified[name] = key
     touches = getattr(effect_journal, "_TOUCHES", {})
     required = action_parser.REQUIRED_PARAMS
-    reversible_set = set(cov.get("reversible", []))
+    # 「可还原」也算撤得回：它的逆操作来自副本账本，不是快照 diff
+    reversible_set = (set(cov.get("reversible", []))
+                      | set(cov.get("restorable", [])))
 
     for name in sorted(spec_names & actual):
         s = SPECS[name]

@@ -31,11 +31,16 @@ class MemorySystem:
     # ------------------------------------------------------------
     # 对话历史
     # ------------------------------------------------------------
-    def add(self, role: str, content: str):
-        """新增一条对话记录（带时间戳），超出上限时裁剪"""
-        self.history.append({
-            "role": role, "content": content, "ts": time.time()
-        })
+    def add(self, role: str, content: str, meta: dict = None):
+        """新增一条对话记录（带时间戳），超出上限时裁剪。
+
+        `meta` 是可选的附加信息（如「读取证据」），只跟着这条消息走，
+        供工作台的对话页渲染成证据卡；不传就与以前完全一样。
+        """
+        entry = {"role": role, "content": content, "ts": time.time()}
+        if meta:
+            entry["meta"] = meta
+        self.history.append(entry)
         self._trim()
         self._extract_preferences(content)
         self.save()
@@ -118,9 +123,23 @@ class MemorySystem:
         n = (max_turns or config.MEMORY_MAX_TURNS) * 2
         return list(self.history[-n:])
 
-    def clear(self):
-        """清空记忆"""
+    def clear_history(self) -> int:
+        """只清空对话记录，保留长期记忆与偏好（「新建对话」用）。
+
+        返回被清掉的条数。刻意不复用 clear()：clear() 会连 facts /
+        preferences 一起删掉，那是「清空全部记忆」，不是开一轮新对话。
+        """
+        n = len(self.history)
+        if not n:
+            return 0
         self.history.clear()
+        self.save()
+        logger.info(f"[Memory] 已清空 {n} 条对话记录（长期记忆保留）")
+        return n
+
+    def clear(self):
+        """清空全部记忆（对话记录 + 长期事实 + 偏好）"""
+        self.clear_history()
         self.preferences.clear()
         self.facts.clear()
         self.save()

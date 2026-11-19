@@ -31,6 +31,17 @@ class TestActionParser:
         actions = parse_actions(raw)
         assert len(actions) <= 12
 
+    def test_read_doc_paths_without_single_path(self):
+        """批量读：paths 数组能替代 path，否则整条动作会被必填校验剔掉。"""
+        actions = parse_actions([{
+            "action": "read_doc",
+            "paths": ["D:/资料/a.txt", "D:/资料/b.docx"],
+        }])
+        assert len(actions) == 1
+        assert actions[0]["action"] == "read_doc"
+        assert actions[0]["paths"] == ["D:/资料/a.txt", "D:/资料/b.docx"]
+        assert "path" not in actions[0]
+
     def test_show_plan_steps_string_split(self):
         actions = parse_actions([{
             "action": "show_plan",

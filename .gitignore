@@ -23,3 +23,9 @@ eval_result.json
 
 # WorkBuddy 会话数据（本地工作记录，不属于产品代码）
 .workbuddy/
+
+# 本机截图与临时渲染产物（含本机路径，不对外）
+/output/
+
+# 个人求职笔记（含自我评价与面试策略，不进公开仓库）
+docs/INTERVIEW_GUIDE.md

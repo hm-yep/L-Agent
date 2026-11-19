@@ -24,6 +24,7 @@
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 
@@ -37,6 +38,15 @@ PREFERENCE_KEYS = {
 _MAX_TEXT = 2000
 # 单条 item 的 evidence 历史上限（防文件无限膨胀）
 _MAX_EVIDENCE = 50
+
+# ---- 大模型批量抽取（observe_batch）的护栏 ----
+# 这些数字是刻意的：一次最多收 6 条、单条值不超过 120 字。
+# 模型容易把"帮我查天气"总结成"喜欢户外"，所以条数少一点、值短一点，
+# 再由下面的原话引用校验逐条核对——宁可漏，不能编。
+_MAX_LLM_ITEMS = 6
+_MAX_LLM_VALUE = 120
+# 开放式偏好的 key：小写字母开头，只允许小写/数字/下划线，2~40 位
+_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 
 # ------------------------------------------------------------
 # 主题色：dark / theme 取自 doc_generator.PPT_TEMPLATES 的深色系，
@@ -262,6 +272,147 @@ def extract_preferences(text: str) -> list:
     return list(found.values())
 
 
+def _norm_ws(text: str) -> str:
+    """去掉所有空白，只用于「引用是否真的出现在原话里」的比对。"""
+    return re.sub(r"\s+", "", text or "")
+
+
+def parse_llm_preferences(raw, turns, *, max_items: int = _MAX_LLM_ITEMS) -> list:
+    """把模型返回的 JSON 校验成可落盘的偏好；任何一条不合格就丢掉。
+
+    防幻觉的唯一硬手段：**每条偏好的 evidence 必须逐字出现在用户原话里**。
+    比对前双方都去掉空白，容忍换行/空格的差异，但不容忍改字。
+    返回 [{"key","value","polarity","confidence","match","evidence_text"}]。
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    text = raw.strip()
+    if text.startswith("```"):                       # 容忍 ```json 包裹
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if isinstance(data, dict):                       # 容忍 {"preferences": [...]}
+        data = data.get("preferences") or data.get("items") or []
+    if not isinstance(data, list):
+        return []
+
+    corpus = _norm_ws("".join(
+        str(t.get("content") or "") for t in (turns or [])
+        if isinstance(t, dict)))
+    if not corpus:
+        return []
+
+    out, seen = [], set()
+    for item in data:
+        if len(out) >= max(1, int(max_items)):
+            break
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip().lower()
+        value = str(item.get("value") or "").strip()
+        quote = str(item.get("evidence") or "").strip()
+        if not _KEY_RE.match(key) or key in seen:
+            continue
+        if not value or len(value) > _MAX_LLM_VALUE:
+            continue
+        needle = _norm_ws(quote)
+        if len(needle) < 4 or needle not in corpus:   # 引用太短或查无实据 → 丢
+            continue
+        seen.add(key)
+        out.append({
+            "key": key,
+            "value": value,
+            "polarity": "positive",
+            "confidence": 0.72,
+            "match": quote[:20],
+            "evidence_text": quote,
+        })
+    return out
+
+
+def _merge_items(items: dict, specs: list, *, source: str, source_turn: str,
+                 max_n: int, now: float) -> list:
+    """把一批偏好并进 items（原地修改），返回出现变化的 key 列表。
+
+    规则层与大模型层共用这一处合并逻辑，避免两套「改主意」语义分叉：
+    同 key 同值时只累加 hits / 证据；改主意则覆盖 value，但保留历史证据
+    与 supersedes 链——「改过什么」本身也是信息。
+    """
+    changed = []
+    ts_base = float(now or time.time())
+    # 一批里每条都比上一条晚一点点，否则上限裁剪时「谁最老」判定不稳
+    for it in items.values():
+        if isinstance(it, dict):
+            try:
+                ts_base = max(ts_base, float(it.get("updated_at") or 0) + 1e-6)
+            except (TypeError, ValueError):
+                continue
+    for idx, p in enumerate(specs):
+        key = str(p.get("key") or "").strip()
+        if not key:
+            continue
+        value = p.get("value")
+        now = round(ts_base + idx * 1e-6, 6)
+        raw = str(p.get("evidence_text") or "")
+        ev = {
+            "text_digest": _text_digest(raw) if raw else "",
+            "match": str(p.get("match") or "")[:20],
+            "turn_id": str(source_turn or "")[:64],
+            "ts": now,
+        }
+        cur = items.get(key)
+        same = (isinstance(cur, dict)
+                and cur.get("value") == value
+                and cur.get("polarity") == p.get("polarity"))
+        if same:
+            cur["hits"] = int(cur.get("hits") or 0) + 1
+            history = list(cur.get("evidence") or [])
+            history.append(ev)
+            cur["evidence"] = history[-_MAX_EVIDENCE:]
+            cur["confidence"] = max(float(cur.get("confidence") or 0),
+                                    float(p.get("confidence") or 0))
+            cur["updated_at"] = now
+            items[key] = cur
+        else:
+            prev, history, created = None, [], now
+            if isinstance(cur, dict):
+                prev = {
+                    "value": cur.get("value"),
+                    "polarity": cur.get("polarity"),
+                    "confidence": cur.get("confidence"),
+                    "updated_at": cur.get("updated_at"),
+                    "supersedes": cur.get("supersedes"),
+                }
+                history = list(cur.get("evidence") or [])
+                created = cur.get("created_at") or now
+            history.append(ev)
+            items[key] = {
+                "key": key,
+                "value": value,
+                "polarity": p.get("polarity") or "positive",
+                "confidence": float(p.get("confidence") or 0.7),
+                "source": source,
+                "evidence": history[-_MAX_EVIDENCE:],
+                "hits": 1,
+                "created_at": created,
+                "updated_at": now,
+                "supersedes": prev,
+            }
+        changed.append(key)
+
+    # 上限：超出按 updated_at 丢最老的（刚写的永远最新，不会被丢）
+    while len(items) > max(1, int(max_n)):
+        oldest = min(
+            items,
+            key=lambda k: float(items[k].get("updated_at") or 0)
+            if isinstance(items[k], dict) else 0.0)
+        del items[oldest]
+    return changed
+
+
 def _strength(item: dict):
     """偏好「强度」排序键：置信度 > 命中次数 > 新鲜度。"""
     return (
@@ -275,6 +426,11 @@ def _describe(item: dict) -> str:
     """把一条偏好翻成系统提示词里的一行纯文本（不含任何证据原文）。"""
     key = item.get("key")
     value = item.get("value")
+    if key not in _KEY_LABELS:
+        # 大模型抽出的开放式偏好：value 本身就是一句人话，
+        # 再套「标签：值」反而变成「work_style：喜欢先看结论」这种机翻味。
+        text = str(value or "").strip()
+        return text[:_MAX_LLM_VALUE]
     label = _KEY_LABELS.get(key, str(key))
     if key == "doc_theme":
         val = ("不用" + str(value)) if item.get("polarity") == "negative" \
@@ -352,76 +508,43 @@ class PreferenceStore:
         if not prefs:
             return []
         raw = text if isinstance(text, str) else ""
+        for p in prefs:
+            p["evidence_text"] = raw          # 规则层：整句就是它的证据
         with self._lock:
             data = self._read()
             items = data["items"]
-            changed_keys = []
-            for p in prefs:
-                key, value = p["key"], p["value"]
-                ts = self._now(items)
-                ev = {
-                    "text_digest": _text_digest(raw),  # 原话只以哈希落盘
-                    "match": str(p["match"])[:20],     # 命中的控制短语（≤20字）
-                    "turn_id": str(source_turn)[:64] if source_turn is not None else "",
-                    "ts": ts,
-                }
-                cur = items.get(key)
-                same = (isinstance(cur, dict)
-                        and cur.get("value") == value
-                        and cur.get("polarity") == p["polarity"])
-                if same:
-                    # 同一 key 同一 value：只累加 hits / evidence，不新增条目
-                    cur["hits"] = int(cur.get("hits") or 0) + 1
-                    history = cur.get("evidence")
-                    history = list(history) if isinstance(history, list) else []
-                    history.append(ev)
-                    cur["evidence"] = history[-_MAX_EVIDENCE:]
-                    cur["confidence"] = max(
-                        float(cur.get("confidence") or 0), p["confidence"])
-                    cur["updated_at"] = ts
-                    items[key] = cur
-                else:
-                    # 新维度 / 改主意：覆盖 value，保留 evidence 全历史与
-                    # supersedes 链指针（嵌套指向更早的决定），不简单丢弃
-                    if isinstance(cur, dict):
-                        prev = {
-                            "value": cur.get("value"),
-                            "polarity": cur.get("polarity"),
-                            "confidence": cur.get("confidence"),
-                            "updated_at": cur.get("updated_at"),
-                            "supersedes": cur.get("supersedes"),
-                        }
-                        history = cur.get("evidence")
-                        history = list(history) if isinstance(history, list) else []
-                        created = cur.get("created_at") or ts
-                    else:
-                        prev, history, created = None, [], ts
-                    history.append(ev)
-                    items[key] = {
-                        "key": key,
-                        "value": value,
-                        "polarity": p["polarity"],
-                        "confidence": p["confidence"],
-                        "evidence": history[-_MAX_EVIDENCE:],
-                        "hits": 1,
-                        "created_at": created,
-                        "updated_at": ts,
-                        "supersedes": prev,
-                    }
-                changed_keys.append(key)
-
-            # 上限：超出按 updated_at 丢最老的（刚写的永远最新，不会被丢）
-            max_n = self._max_items()
-            while len(items) > max_n:
-                oldest = min(
-                    items,
-                    key=lambda k: float(items[k].get("updated_at") or 0)
-                    if isinstance(items[k], dict) else 0.0)
-                del items[oldest]
-
+            changed = _merge_items(
+                items, prefs, source="rule", source_turn=source_turn or "",
+                max_n=self._max_items(), now=self._now(items))
             data["items"] = items
             self._write(data)
-            return [dict(items[k]) for k in changed_keys if k in items]
+            return [dict(items[k]) for k in changed if k in items]
+
+    def observe_batch(self, turns, llm_fn, *, source_turn: str = None) -> list:
+        """每 N 轮把最近对话交给大模型，补一层规则抓不到的开放式偏好。
+
+        `turns` 是 [{"role","content"}, ...]，`llm_fn(turns) -> str` 返回模型
+        原文。解析后每条都要过原话引用校验——模型编的、查无实据的一律丢。
+        任何异常都吞掉返回 []：偏好学习失败绝不能影响主对话。
+        """
+        if not turns or llm_fn is None:
+            return []
+        try:
+            raw = llm_fn(turns)
+        except Exception:                     # noqa: BLE001
+            return []
+        specs = parse_llm_preferences(raw, turns)
+        if not specs:
+            return []
+        with self._lock:
+            data = self._read()
+            items = data["items"]
+            changed = _merge_items(
+                items, specs, source="llm", source_turn=source_turn or "",
+                max_n=self._max_items(), now=self._now(items))
+            data["items"] = items
+            self._write(data)
+            return [dict(items[k]) for k in changed if k in items]
 
     # ---------- 读取（每次都从当前落盘状态读） ----------
     def get(self, key: str, default=None):

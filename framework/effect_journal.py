@@ -44,6 +44,14 @@ _TOUCHES = {
 # 回退动作本身：给它再记一笔账就成了「撤销撤销」的套娃，跳过。
 UNDO_ITSELF = {"undo_last"}
 
+# 可还原：改写用户文件前已落副本，撤销按账本把原件还原回来。
+#
+# 为什么单独一类：它**撤得回**，但不是靠五面快照 diff 发现的——被改写的是用户
+# 自己的文件，既不在快照的五面里，也不是这一轮「生成」出来的（不能删）。
+# 它的逆操作来自改写那一刻写下的账本条目（副本路径），所以这一类必须配
+# 「显式记账」，否则改了文件却查不出来，等于没账。
+RESTORABLE = {"edit_doc"}
+
 # 有后果、但快照看不见的项目。列在这里就是承认撤不了，并给出人话原因。
 BLIND_SPOTS = {
     "open_app": "程序我已经帮你打开了，但我不替你关——你窗口里可能有你没存的活儿",
@@ -73,8 +81,8 @@ def trajectory_name(action: dict) -> str:
 # 确定无外部副作用的动作（只改桌宠姿态/界面显示，或只读）
 NO_EFFECT = {
     "think", "idle", "jump", "move_to", "show_bubble", "show_card",
-    "search_app", "see_screen", "web_search", "read_doc", "work_log",
-    "todo_list", "show_plan", "cancel_shutdown", "save_skill",
+    "search_app", "see_screen", "web_search", "read_doc", "list_dir",
+    "work_log", "todo_list", "show_plan", "cancel_shutdown", "save_skill",
 }
 
 
@@ -257,6 +265,16 @@ def apply_ops(ops, api: dict, started_at: float = 0.0) -> list:
                             note = "文件删了，但交付清单里那条没找到"
                     except (OSError, KeyError) as e:
                         note = f"文件删了，交付清单没更新：{e}"
+        elif kind == "restore_file":
+            # 还原用户原件：把改写前落的副本拷回原位。
+            # 这条不走 delete_file 的四道关卡——用户自己的文件我们只还原，不删。
+            path = op.get("path", "")
+            backup = op.get("backup", "")
+            try:
+                api["restore_file"](path, backup)
+                ok = True
+            except (OSError, KeyError) as e:
+                ok, note = False, f"原件没还原：{e}"
         else:
             handler = api.get(kind)
             if handler is None:
@@ -273,6 +291,21 @@ def apply_ops(ops, api: dict, started_at: float = 0.0) -> list:
     return out
 
 
+def file_edit_item(path: str, backup: str) -> dict:
+    """改写用户文件的一笔账。
+
+    与 diff 产出的回退项同形，但来源不同：被改的是用户自己的文件，既不在五面
+    快照里，也不是这一轮生成出来的（不能删）。撤得回，靠的是改写那一刻写下的
+    副本路径——所以「落副本」这一步失败就不许记账，更不许改文件。
+    """
+    return {
+        "kind": "file_edit", "reversible": True,
+        "label": f"改写了 {os.path.basename(path)}（原文件副本已留）",
+        "path": path, "backup": backup,
+        "undo": {"op": "restore_file", "path": path, "backup": backup},
+    }
+
+
 def summarize(items, spots=()) -> list:
     """回退项 + 撤不掉的东西 → 给人看的几行字。"""
     lines = []
@@ -285,19 +318,23 @@ def summarize(items, spots=()) -> list:
 
 
 def coverage(valid_actions) -> dict:
-    """把动作全集按「这轮做完能不能撤」分三类，供 README/自检引用。
+    """把动作全集按「这轮做完能不能撤」分四类，供 README/自检引用。
 
-    分类靠两张表：`_TOUCHES` 里的可观测面 → 可撤；`BLIND_SPOTS` → 撤不回；
-    `NO_EFFECT` → 无副作用。**没被任何一张表收进来的动作会进 unknown**，
-    调用方应当把它当错误处理（新增动作忘了归类，比分类分错更常见）。
+    分类靠几张表：`_TOUCHES` 里的可观测面 → 可撤；`RESTORABLE` → 可还原
+    （撤得回，但逆操作来自改写时写下的副本账本，不是快照 diff）；
+    `BLIND_SPOTS` → 撤不回；`NO_EFFECT` → 无副作用。
+    **没被任何一张表收进来的动作会进 unknown**，调用方应当把它当错误处理
+    （新增动作忘了归类，比分类分错更常见）。
     """
-    out = {"reversible": [], "blind": [], "no_effect": [], "undo": [],
-           "unknown": []}
+    out = {"reversible": [], "restorable": [], "blind": [], "no_effect": [],
+           "undo": [], "unknown": []}
     for name in sorted(set(valid_actions)):
         if name in UNDO_ITSELF:
             out["undo"].append(name)
         elif name in _TOUCHES:
             out["reversible"].append(name)
+        elif name in RESTORABLE:
+            out["restorable"].append(name)
         elif name in BLIND_SPOTS:
             out["blind"].append(name)
         elif name in NO_EFFECT:

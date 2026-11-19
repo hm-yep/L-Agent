@@ -45,33 +45,11 @@ from ui.pet_window import PetWindow
 
 # ============================================================
 # 后台启动 FastAPI 服务
+# 启动逻辑只有一个出处：framework.api_service。命令行 --api 与工作台内嵌
+# 网页台都调它，避免两份实现各起一个端口、连的不是同一份会话。
 # ============================================================
-def start_api_in_thread(host: str = "127.0.0.1", port: int = 8000):
-    """在后台线程启动 FastAPI 服务，不阻塞桌面版 UI。
-
-    - uvicorn 支持 reload=False 时在线程里跑
-    - daemon=True：主程序退出时自动结束
-    - 端口被占用时只记日志，不影响桌面版
-    """
-    import threading
-
-    def _run():
-        try:
-            import uvicorn
-            logger.info(f"[Main] API 服务启动中: http://{host}:{port}")
-            uvicorn.run("api.server:app", host=host, port=port,
-                        log_level="warning", reload=False)
-        except ImportError as e:
-            logger.error(f"[Main] API 依赖缺失，无法启动: {e}")
-            logger.error("请先执行: pip install fastapi uvicorn")
-        except OSError as e:
-            logger.error(f"[Main] API 端口被占用或权限不足: {e}")
-        except Exception as e:                       # noqa: BLE001
-            logger.exception(f"[Main] API 服务异常: {e}")
-
-    t = threading.Thread(target=_run, name="api-server", daemon=True)
-    t.start()
-    return t
+from framework.api_service import (API_BASE, API_HOST, API_PORT, api_alive,
+                                   start_api_in_thread)
 
 
 # ============================================================
@@ -183,6 +161,31 @@ def run_selftest(window: PetWindow):
               f"窗口 {dlg.geometry().getRect()} / 屏幕 {screen.getRect()}")
         dlg.close()
     QTimer.singleShot(8000, test_settings)
+
+    # T+8.2s: 工作台「网页调试台」页内嵌的入场券
+    def test_web_engine_boot():
+        """此刻 QApplication 已经存在，正好复现工作台的懒加载时机。
+
+        main() 里没在 QApplication 之前设 AA_ShareOpenGLContexts，这个 import
+        必抛 ImportError，这一页在每次正常启动里都只能降级成说明卡
+        （2026-11-18 真机就是这样，而包其实装着）。真没装这个包时记 SKIP，
+        不算失败——那是可选依赖，不是顺序错了。
+        """
+        import importlib.util
+        name = "PyQt5.QtWebEngineWidgets"
+        try:
+            installed = importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            installed = False
+        if not installed:
+            logger.info("[SelfTest] 网页台可内嵌检查: SKIP（未安装 PyQtWebEngine）")
+            return
+        try:
+            from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+            check("网页台可内嵌(QApplication 之后仍能起 WebEngine)", True)
+        except ImportError as e:
+            check("网页台可内嵌(QApplication 之后仍能起 WebEngine)", False, str(e))
+    QTimer.singleShot(8200, test_web_engine_boot)
 
     # T+8.5s: 用户设置持久化
     def test_persist():
@@ -367,7 +370,7 @@ def run_selftest(window: PetWindow):
             import urllib.request
             try:
                 with urllib.request.urlopen(
-                        "http://127.0.0.1:8000/health", timeout=3) as r:
+                        API_BASE + "/health", timeout=3) as r:
                     check("API 服务健康检查", r.status == 200)
             except Exception as e:           # noqa: BLE001
                 check("API 服务健康检查", False, str(e))
@@ -434,11 +437,19 @@ def main():
 
     # 高分屏文字锐利：这两个属性必须在 QApplication 实例化【之前】设置，
     # 否则 125%/150% 缩放下字体会发虚、控件偏小（见 ui/typography.py）。
-    from ui.typography import enable_high_dpi, install_app_fonts
+    from ui.typography import enable_high_dpi
+    from ui import theme
     enable_high_dpi()
 
+    # 同样是「必须在 QApplication 之前」的进程级属性，但它挡的是工作台「网页调试台」页：
+    # 不设的话，懒加载里的 `from PyQt5.QtWebEngineWidgets import QWebEngineView`
+    # 会抛 ImportError（PyQt 就靠这个属性判断初始化时机），内嵌网页台在
+    # 任何一次正常启动里都只能降级成说明卡——而包其实装着。
+    from PyQt5.QtCore import QCoreApplication, Qt
+    QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+
     app = QApplication(sys.argv)
-    install_app_fonts(app)                 # 全应用统一界面字体栈
+    theme.install(app)                      # 全局唯一一套设计令牌 + 样式表
     app.setQuitOnLastWindowClosed(False)   # 托盘常驻，关窗不退出
 
     # 应用图标

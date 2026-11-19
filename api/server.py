@@ -43,6 +43,11 @@ from framework.utils import logger
 from framework import rag_client
 from framework.memory_system import MemorySystem
 from framework.task_board import TaskBoard
+# 网页端与桌面端共用同一套授权判定：有锚点交给桌面，没有就自持兜底。
+# 这三个模块顶层只依赖标准库，不拖 Qt（API 镜像有禁 Qt 的契约）。
+from framework.grant_anchor import GrantAnchorClient
+from framework.grant_service import DECISIONS, GrantService
+from framework import file_reader
 
 
 _GENERIC_500 = "处理失败，详见服务端日志"
@@ -65,6 +70,11 @@ def require_access(
     Starlette TestClient 的 client.host 是 "testclient"，把它一并视为本机，
     否则所有接口测试都得先伪造令牌（测试覆盖反而会下降）。
     """
+    # 静态调试台首页本身不含数据，放行它才能看到页首的令牌输入框：
+    # Docker 场景必须配置令牌，浏览器导航无法带自定义 header，若 / 也要令牌，
+    # 页面根本打不开、令牌框永远不可达。其余所有 API 路由仍照常鉴权。
+    if request.scope.get("path", "") == "/":
+        return
     token = config.API_AUTH_TOKEN
     if token:
         supplied = x_api_key or ""
@@ -96,11 +106,23 @@ app.add_middleware(
 _memory = MemorySystem()
 _tasks = TaskBoard()
 
+# 网页端授权入口：优先走桌面锚点（授权记录只有桌面一份），
+# 桌宠没开时用同一套 GrantService 自持，判定逻辑不分治（ADR 0007）。
+_grant_client = GrantAnchorClient()
+_web_grants = GrantService()
+
 # 会话 sid -> (memory 起始索引, 最后访问时间)
 _sessions: dict = {}
 
-# RAG 是可选依赖，health 要如实反映，不能恒为 True
+# RAG 与 Whisper 都是可选依赖，health 要如实反映，不能恒为 True。
+# 用 find_spec 而不是 try-import：voice_input.py 顶层只 import 标准库，
+# Whisper 是在子进程里延迟加载的，from-import 永远不会抛 ImportError，
+# 缺依赖时会一路走到含糊的 500「详见服务端日志」。
 _RAG_AVAILABLE = importlib.util.find_spec("langchain_chroma") is not None
+_VOICE_AVAILABLE = (
+    importlib.util.find_spec("faster_whisper") is not None
+    or importlib.util.find_spec("whisper") is not None
+)
 
 
 def _check_sid(sid: Optional[str]) -> str:
@@ -119,6 +141,12 @@ def _require_rag():
     if not _RAG_AVAILABLE:
         raise HTTPException(
             503, "知识库依赖未安装：pip install -r requirements-rag.txt")
+
+
+def _require_voice():
+    if not _VOICE_AVAILABLE:
+        raise HTTPException(
+            503, "语音依赖未安装：pip install -r requirements-voice.txt")
 
 
 def _read_upload_sync(file: UploadFile, limit: int) -> bytes:
@@ -156,6 +184,8 @@ class ChatRequest(BaseModel):
     use_rag: bool = False
     use_search: bool = False
     top_k: int = Field(3, ge=1, le=10)
+    # 要读的本机路径（可选）。非默认目录会先返回 pending_grant，不阻塞等待。
+    read_path: Optional[str] = Field(None, max_length=1000)
 
 
 class ChatResponse(BaseModel):
@@ -163,6 +193,13 @@ class ChatResponse(BaseModel):
     reply: str
     references: list = []
     elapsed_ms: int = 0
+    pending_grant: Optional[dict] = None
+    grant_note: str = ""
+
+
+class GrantAnswerRequest(BaseModel):
+    """POST /grant/{gid} 的请求体，三档与桌面授权卡一一对应。"""
+    decision: str = Field(..., max_length=16)
 
 
 class IngestRequest(BaseModel):
@@ -190,6 +227,7 @@ class AgentRunRequest(BaseModel):
     task: str = Field(..., min_length=1,
                       max_length=config.API_MAX_TASK_CHARS)
     session_id: Optional[str] = Field(None, max_length=64)
+    read_path: Optional[str] = Field(None, max_length=1000)
 
 
 class AgentRunResponse(BaseModel):
@@ -199,10 +237,67 @@ class AgentRunResponse(BaseModel):
     results: list
     calls: int
     elapsed: float
+    pending_grant: Optional[dict] = None
+    grant_note: str = ""
+    results_note: str = ""
 
 
 class TodoItem(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
+
+
+# ---------------- 本机路径授权：网页端与桌面端共用一条通道 ----------------
+def _grant_notes() -> list:
+    """自持模式下超时按拒的请求，要在下一次响应里明说。"""
+    out = []
+    for g in _web_grants.expire_due():
+        out.append("本机文件授权请求（%s）等了 %d 秒没确认，已按拒绝处理。"
+                   % (g.get("name") or g.get("path") or g.get("gid", ""),
+                      _web_grants.timeout_sec))
+    return out
+
+
+def _ask_read_path(raw_path: str) -> dict:
+    """要读本机路径时的唯一入口；有桌面锚点就完全交给锚点。
+
+    返回 {"verdict": allow|grant|deny, "gid": ..., "path": ..., ...}。
+    grant 时只是登记待决请求并立即返回，绝不阻塞等用户点。
+    """
+    if _grant_client.discover():
+        res = _grant_client.ask(raw_path, source="web")
+        if res and res.get("verdict") in ("allow", "grant", "deny"):
+            return res
+    verdict, real, reason = _web_grants.check(raw_path)
+    if verdict != "grant":
+        return {"verdict": verdict, "path": real or "", "gid": "",
+                "reason": reason}
+    info = _web_grants.request(real, source="web", reason=reason)
+    return {"verdict": "grant", "gid": info["gid"], "path": real,
+            "name": info.get("name", ""), "dir": info.get("dir", ""),
+            "reason": info.get("reason", ""),
+            "expires_in": info.get("expires_in", 0)}
+
+
+def _answer_grant(gid: str, decision: str) -> dict:
+    """回答授权：锚点模式落桌面记录，自持模式落网页记录，判据同一份。"""
+    if _grant_client.discover():
+        res = _grant_client.answer(gid, decision)
+        if res:
+            return res
+    return _web_grants.answer(gid, decision)
+
+
+def _read_path_context(path: str, limit: int = 12000) -> tuple:
+    """读一份已授权的本机文件：返回 (上下文, 证据) 或 ("", 错误说明)。"""
+    res = file_reader.read(path)
+    if not res.get("ok"):
+        return "", {"error": res.get("note") or "这份文件读不出来"}
+    body = (res.get("text") or "")[:limit]
+    name = Path(path).name
+    ev = dict(res.get("evidence") or {})
+    ev.update({"name": name, "path": path, "chars": len(body),
+               "note": res.get("note") or ""})
+    return "【本机文件 %s】\n%s" % (name, body), ev
 
 
 # ---------------- LLM 调用 ----------------
@@ -268,7 +363,8 @@ def _build_search_query(message: str) -> str:
 
 
 def agent_chat(message: str, history: list, use_rag: bool,
-               use_search: bool, top_k: int = 3) -> tuple:
+               use_search: bool, top_k: int = 3,
+               read_context: str = "") -> tuple:
     """主 Agent 文字对话（含 RAG / 联网检索）。"""
     references = []
 
@@ -316,6 +412,8 @@ def agent_chat(message: str, history: list, use_rag: bool,
                                "message": "联网检索暂时不可用"})
 
     user_prompt = message
+    if read_context:
+        user_prompt += "\n\n" + read_context
     if rag_context:
         user_prompt += f"\n\n【参考资料·知识库】\n{rag_context}"
     if search_context:
@@ -364,6 +462,8 @@ async def index():
 async def health():
     return {"status": "ok", "ts": int(time.time()),
             "rag_available": _RAG_AVAILABLE,
+            "voice_available": _VOICE_AVAILABLE,
+            "llm_key_configured": bool(config.DEEPSEEK_API_KEY),
             "auth_required": bool(config.API_AUTH_TOKEN),
             "memory_count": len(_memory.history),
             "todos_count": len(_tasks.open_todos()),
@@ -376,19 +476,54 @@ async def chat(req: ChatRequest):
     _check_sid(req.session_id)
     sid = req.session_id or f"s_{int(time.time()*1000)}"
     history = _get_history(sid)
+    notes = _grant_notes()
+    read_context = ""
+    local_evidence = None
+
+    # 本机文件读取先过授权：grant 只登记待决请求并立即返回，不阻塞等点击。
+    if req.read_path:
+        g = _ask_read_path(req.read_path)
+        verdict = g.get("verdict")
+        if verdict == "grant":
+            reply = ("这个文件不在我平常能读的目录里，需要你确认一次。"
+                     "选「只读这一个」或「允许整个文件夹」，确认后我会重新读给你。")
+            _record(sid, req.message, reply)
+            return ChatResponse(
+                session_id=sid, reply=reply, references=[],
+                elapsed_ms=int((time.time() - t0) * 1000),
+                pending_grant=g, grant_note="；".join(notes))
+        if verdict == "deny":
+            reply = "这个文件我不便读取：%s。" % (g.get("reason") or "路径被拒绝")
+            _record(sid, req.message, reply)
+            return ChatResponse(
+                session_id=sid, reply=reply, references=[],
+                elapsed_ms=int((time.time() - t0) * 1000),
+                grant_note="；".join(notes))
+        read_context, local_evidence = _read_path_context(g["path"])
+        if local_evidence and local_evidence.get("error"):
+            reply = "读文件失败：%s" % local_evidence["error"]
+            _record(sid, req.message, reply)
+            return ChatResponse(
+                session_id=sid, reply=reply, references=[],
+                elapsed_ms=int((time.time() - t0) * 1000),
+                grant_note="；".join(notes))
 
     try:
         reply, refs = agent_chat(req.message, history, req.use_rag,
-                                 req.use_search, req.top_k)
+                                 req.use_search, req.top_k,
+                                 read_context=read_context)
     except HTTPException:
         raise
     except Exception:                          # noqa: BLE001
         logger.exception("[API] chat 失败")
         raise HTTPException(500, _GENERIC_500)
 
+    if local_evidence:
+        refs = list(refs) + [dict(local_evidence, type="local_file")]
     _record(sid, req.message, reply)
     return ChatResponse(session_id=sid, reply=reply, references=refs,
-                        elapsed_ms=int((time.time() - t0) * 1000))
+                        elapsed_ms=int((time.time() - t0) * 1000),
+                        grant_note="；".join(notes))
 
 
 @app.post("/ingest/text", response_model=IngestResponse)
@@ -446,6 +581,7 @@ def voice_to_text(
     t0 = time.time()
     language = _check_language(language)
     logger.info("[API] 收到语音请求 /voice")
+    _require_voice()
     try:
         from framework.voice_input import transcribe_bytes
     except ImportError:
@@ -477,6 +613,7 @@ def voice_chat(
     language = _check_language(language)
     _check_sid(session_id)
     logger.info("[API] 收到语音请求 /voice/chat")
+    _require_voice()
     try:
         from framework.voice_input import transcribe_bytes
     except ImportError:
@@ -520,10 +657,37 @@ async def agent_run(req: AgentRunRequest):
     t0 = time.time()
     _check_sid(req.session_id)
     sid = req.session_id or f"s_{int(time.time()*1000)}"
+    notes = _grant_notes()
+    task = req.task
+    if req.read_path:
+        g = _ask_read_path(req.read_path)
+        verdict = g.get("verdict")
+        if verdict in ("grant", "deny"):
+            reason = ("这个文件要你点一下头才能交给多智能体读。"
+                      if verdict == "grant"
+                      else "这个文件我不便读取：%s。" %
+                           (g.get("reason") or "路径被拒绝"))
+            return AgentRunResponse(
+                session_id=sid, task=req.task, steps=[], results=[],
+                calls=0, elapsed=round(time.time() - t0, 1),
+                pending_grant=g if verdict == "grant" else None,
+                grant_note="；".join(notes),
+                results_note=reason)
+        context, ev = _read_path_context(g["path"])
+        if ev and ev.get("error"):
+            return AgentRunResponse(
+                session_id=sid, task=req.task, steps=[], results=[],
+                calls=0, elapsed=round(time.time() - t0, 1),
+                grant_note="；".join(notes),
+                results_note="读文件失败：%s" % ev["error"])
+        task = req.task + "\n\n" + context
     try:
-        result = get_orchestrator().run(req.task)
+        result = get_orchestrator().run(task)
     except Exception:                          # noqa: BLE001
         logger.exception("[API] 多智能体失败")
+        if not config.DEEPSEEK_API_KEY:
+            raise HTTPException(
+                500, "未配置 DEEPSEEK_API_KEY：多智能体编排需要真实模型")
         raise HTTPException(500, "编排失败，详见服务端日志")
     _memory.add("user", f"[多智能体] {req.task}")
     _memory.add("assistant",
@@ -533,7 +697,26 @@ async def agent_run(req: AgentRunRequest):
         session_id=sid, task=result["task"], steps=result["steps"],
         results=result["results"], calls=result["calls"],
         elapsed=round(time.time() - t0, 1),
+        grant_note="；".join(notes),
     )
+
+
+@app.post("/grant/{gid}")
+async def grant_answer(gid: str, req: GrantAnswerRequest):
+    """回答一条本机文件授权请求：file / tree / deny。
+
+    鉴权走 app 级 `require_access`：配了令牌必须带令牌，没配令牌只接受回环。
+    有桌面锚点时答案落在桌面那份授权记录里（网页端与桌宠不分治）。
+    """
+    decision = str(req.decision or "").strip()
+    if decision not in DECISIONS:
+        raise HTTPException(400, "decision 必须是 file / tree / deny 之一")
+    res = _answer_grant(gid, decision)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("message") or "授权处理失败")
+    return {"ok": True, "decision": decision,
+            "message": res.get("message", ""),
+            "grant": res.get("grant", {})}
 
 
 # ---------------- 任务台（提醒 + 待办，共享桌面版数据） ----------------

@@ -383,9 +383,27 @@ API_MAX_SESSIONS = 512              # 会话表上限（防伪造 sid 无限增�
 TRAJECTORY_ENABLED = True       # append-only 事件流（轨迹、哈希链、任意轮回滚）
 PREFERENCE_LEARNING = True      # 从自然对话里自动发现偏好（无需用户说「记住」）
 PREFERENCE_NOTIFY = True        # 发现偏好时记一条工作日志（不弹气泡打断用户）
+# 规则层只能听懂 6 类固定句式；这一层每 N 轮把对话交给模型，补开放式偏好。
+# 没配 API Key 时自动跳过，不报错也不打扰。
+PREFERENCE_LLM = True
+PREFERENCE_LLM_EVERY = 3        # 每几轮投递一次（太少费钱，太多学得慢）
+# 偏好默认在后台静默学习，界面上不展示；用户主动打开这个开关才显示明细。
+PREFERENCE_PANEL = False
 EVOLUTION_ENABLED = True        # 从失败/质量门/撤销里归纳规则，下次自动调整
 PLAN_DAG_ENABLED = True         # 计划编译成依赖图，执行前静态校验
 EFFECT_SPEC_STRICT = False      # True 时契约前置校验不通过就拒绝执行（默认只记录）
+
+# 界面上那五个开关的落盘键名：属性名 → user_settings.json 里的键。
+# 工作台点一下就写这个文件，启动时 apply_user_settings() 按同一张表读回来。
+CAPABILITY_KEYS = {
+    "TRAJECTORY_ENABLED": "trajectory_enabled",
+    "PREFERENCE_LEARNING": "preference_learning",
+    "PREFERENCE_LLM": "preference_llm",
+    "PREFERENCE_PANEL": "preference_panel",
+    "EVOLUTION_ENABLED": "evolution_enabled",
+    "PLAN_DAG_ENABLED": "plan_dag_enabled",
+    "EFFECT_SPEC_STRICT": "effect_spec_strict",
+}
 MAX_PREFERENCES = 40
 MAX_RULES = 24
 
@@ -421,7 +439,7 @@ def _user_settings_path() -> str:
     return path
 
 
-def save_user_settings(**kwargs) -> None:
+def save_user_settings(**kwargs) -> bool:
     """增量保存用户设置到 JSON（原子写 + 收紧权限）。
 
     这个文件里含用户填写的 API Key，因此：
@@ -429,6 +447,8 @@ def save_user_settings(**kwargs) -> None:
       * POSIX 下 chmod 600，仅属主可读写；
       * Windows 的 ACL 不能靠 chmod 保证，需要更强隔离时请改用
         环境变量（DEEPSEEK_API_KEY 等），不要落盘。
+
+    返回是否真的写盘成功——界面上的开关要据此说「已存盘」还是「没存上」。
     """
     data = load_user_settings()
     data.update(kwargs)
@@ -444,6 +464,7 @@ def save_user_settings(**kwargs) -> None:
             os.chmod(path, 0o600)
         except OSError:
             pass
+        return True
     except OSError as e:
         from framework.utils import logger
         logger.warning(f"[Config] 用户设置保存失败: {e}")
@@ -451,6 +472,7 @@ def save_user_settings(**kwargs) -> None:
             os.remove(tmp)
         except OSError:
             pass
+        return False
 
 
 def load_user_settings() -> dict:
@@ -496,13 +518,18 @@ def apply_user_settings() -> dict:
     # 有 Key 就自动启用真实 AI（无需手改代码）
     use_real = data.get("use_real_ai", bool(DEEPSEEK_API_KEY))
     USE_REAL_AI = bool(use_real and DEEPSEEK_API_KEY)
+
+    # 五个能力开关：core.py 每次调用都重读 config.X（不是 import 时抓值），
+    # 所以运行期由工作台翻牌会立刻生效，这里只负责下次启动读回同样的值。
+    for attr, key in CAPABILITY_KEYS.items():
+        globals()[attr] = bool(data.get(key, globals()[attr]))
     return data
 
 
 # ============================================================
 # UI 参数
 # ============================================================
-PET_SIZE = 140                    # 角色尺寸（像素），按用户偏好缩小（185→160→140）
+PET_SIZE = 120                    # 角色尺寸（像素），按用户偏好缩小（185→160→140）
 BUBBLE_DURATION = 3500            # 气泡最短显示时长（毫秒），也是基础时长
 BUBBLE_MS_PER_CHAR = 180          # 气泡按字数追加的阅读时长（毫秒/字）
 BUBBLE_DURATION_MAX = 30000       # 气泡最长显示时长（毫秒），防止长回复赖着不走

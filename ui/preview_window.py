@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 
 from framework import config
 from framework.utils import logger
+from ui import theme
 from ui.sprite_manager import SpriteManager, POSES, EMOTIONS
 from ui.sound_manager import SoundManager
 from ui.ui_manager import BubbleWidget, InfoCardWidget
@@ -95,12 +96,13 @@ class StageArea(QWidget):
 
         # ---- 背景 ----
         if self.bg == "checker":
-            # 棋盘格：直观体现"透明区域"
+            # 棋盘格：直观体现"透明区域"（两档灰取自主题令牌，跟着深浅色走）
             cell = 16
+            c_a = theme.Q("SURFACE2")
+            c_b = theme.Q("BORDER_STRONG")
             for y in range(0, h, cell):
                 for x in range(0, w, cell):
-                    c = QColor(235, 235, 240) if (x // cell + y // cell) % 2 == 0 \
-                        else QColor(205, 205, 212)
+                    c = c_a if (x // cell + y // cell) % 2 == 0 else c_b
                     p.fillRect(x, y, cell, cell, c)
         elif self.bg == "sky":
             grad = QLinearGradient(0, 0, 0, h)
@@ -140,6 +142,7 @@ class PreviewWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("助手预览 · 组件调试台")
+        self.setObjectName("previewWindow")   # 全局样式表按名字给底色
         self.resize(880, 560)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
 
@@ -153,6 +156,9 @@ class PreviewWindow(QWidget):
         self.card = InfoCardWidget(sound=self.sound)
         self.input_box = InputDialog()
         self.input_box.command_submitted.connect(self._on_preview_command)
+        # 预览窗是独立组件调试台：历史记录 / 工作台两条信号在这里没有接收者，
+        # 隐藏对应按钮，只留下真正能用的「输入 + 发送」。
+        self.input_box.set_aux_buttons_visible(False)
 
         self._cycling = False
         self._cycle_index = 0
@@ -160,7 +166,6 @@ class PreviewWindow(QWidget):
         self._cycle_timer.timeout.connect(self._cycle_next)
 
         self._init_ui()
-        self._apply_style()
         logger.info("[Preview] 预览页面已打开")
 
     # ============================================================
@@ -168,8 +173,8 @@ class PreviewWindow(QWidget):
     # ============================================================
     def _init_ui(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root.setContentsMargins(*(theme.SP["l"],) * 4)
+        root.setSpacing(theme.SP["l"])
 
         # ---- 左侧：舞台 ----
         left = QVBoxLayout()
@@ -178,7 +183,7 @@ class PreviewWindow(QWidget):
 
         # 舞台底部：状态信息
         self.status = QLabel("状态: idle | 帧: 0 | FPS: 0 | 粒子: 0")
-        self.status.setObjectName("previewStatus")
+        self.status.setObjectName("statusChip")
         left.addWidget(self.status)
 
         # 实时刷新状态栏
@@ -190,7 +195,7 @@ class PreviewWindow(QWidget):
 
         # ---- 右侧：控制面板 ----
         right = QVBoxLayout()
-        right.setSpacing(10)
+        right.setSpacing(theme.SP["m"])
 
         # 动画状态
         gb_pose = QGroupBox("动画状态")
@@ -289,42 +294,6 @@ class PreviewWindow(QWidget):
 
         right.addStretch(1)
         root.addLayout(right, 2)
-
-    def _apply_style(self):
-        """预览页面样式（独立于 style.qss，避免影响主程序）"""
-        self.setStyleSheet("""
-            QWidget { font-family: "Microsoft YaHei"; color: #4a3b2a; }
-            QGroupBox {
-                border: 1px solid #e8cfa5; border-radius: 10px;
-                margin-top: 12px; padding: 10px 8px 8px 8px;
-                background-color: #fffaf2;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin; left: 12px; padding: 0 6px;
-                color: #e07b39; font-weight: bold;
-            }
-            QPushButton {
-                background-color: #ffe8c8; border: 1px solid #f0c987;
-                border-radius: 8px; padding: 6px 10px;
-            }
-            QPushButton:hover { background-color: #ffd9a0; }
-            QPushButton:checked { background-color: #ffb25c; color: white; font-weight: bold; }
-            #previewStatus {
-                background-color: #fffaf2; border: 1px solid #e8cfa5;
-                border-radius: 8px; padding: 6px 10px; color: #6b5d4d;
-            }
-            QLineEdit {
-                border: 1px solid #e0c9a0; border-radius: 8px;
-                padding: 6px 10px; background-color: white;
-            }
-            QSlider::groove:horizontal {
-                height: 4px; background: #f0dcc0; border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                width: 14px; margin: -5px 0; border-radius: 7px;
-                background: #ffb25c;
-            }
-        """)
 
     # ============================================================
     # 交互

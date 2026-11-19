@@ -23,7 +23,9 @@ from PyQt5.QtWidgets import (
 )
 
 from framework import config
-from framework.utils import resource_path
+from framework.utils import plain_text
+from . import theme
+from .icons import icon as stroke_icon
 
 # ------------------------------------------------------------
 # 程序化绘制的头像（不依赖系统 emoji 字体，避免"👤"显示不出来的问题）
@@ -76,28 +78,34 @@ def _avatar(kind: str, size: int = 22) -> QPixmap:
 
 
 # 输入条尺寸 / 输入行高度
-INPUT_WIDTH = 560
-INPUT_ROW_HEIGHT = 38
-# 记录面板尺寸（09-19 再扩大：长宽约为最初的 1.5 倍，字体同步放大，
-# 长回复/代码完整显示，靠列表滚动查看）
-PANEL_WIDTH = 840
-PANEL_HEIGHT = 960
+INPUT_WIDTH = 500
+INPUT_ROW_HEIGHT = 24
+# 输入框在条内的最小宽度：不再用 stretch 吞掉剩余空间，保持紧凑
+INPUT_EDIT_MIN_W = 160
+
+# ---- 记录面板：宽度由「条目里到底放得下多宽的正文」倒推 ----------------
+# 上一版把 PANEL_WIDTH 改成 640 时没跟着改正文固定宽 716，条目宽度算出来
+# 只有 568，正文被横向挤掉一截；这里把每一层留白命名后相加，宽度不再各写各的。
+AVATAR_W = 28                  # 用户行头像
+ITEM_GAP = 8                   # 头像与正文的间距
+ITEM_MARGIN = 6                # 条目内左右留白
+PANEL_INNER_MARGIN = 14        # 面板到列表
+PANEL_WRAP_MARGIN = 8          # 窗口到面板（给阴影留白）
+SCROLLBAR_W = 20               # 竖向滚动条预留
+PANEL_HEIGHT = 800
+
+CONTENT_LABEL_W = 520          # 正文标签固定宽：换行宽度确定，高度才算得准
+ITEM_W = (CONTENT_LABEL_W + 2 * ITEM_MARGIN + AVATAR_W + ITEM_GAP)
+PANEL_WIDTH = (ITEM_W + 2 * PANEL_INNER_MARGIN + 2 * PANEL_WRAP_MARGIN
+               + SCROLLBAR_W)
+# 正文标签的 QSS 内边距 12+12 + 边框 1+1 = 26，上下 8+8 + 边框 1+1 = 18
+# （与 ui/theme.py 的 #historyTextUser/#historyTextPet 同一份，改了那边要改这里）
+CONTENT_CHROME_W = 26
+CONTENT_CHROME_H = 18
+CONTENT_SAFE_H = 10            # 底部宁可多留白，也不裁掉半行字
+CONTENT_TEXT_W = CONTENT_LABEL_W - CONTENT_CHROME_W
 # 超过这个字数的回复默认折叠，只显示开头 + 「展开全文」按钮
 FOLD_TEXT_LEN = 140
-# 正文标签固定宽度：条目可用宽 756（面板 840 - 外边距 72 - 行内边距 12），
-# 用户行还要让出头像 28 + 间距 8，取 716 各方都放得下。
-# 固定宽度让换行宽度变成确定值（QSS 内边距 26 + 边框 2 占 28 → 正文 688），
-# 高度按同一条宽度计算，彻底消除"算的高度比实际渲染矮 → 半行字被裁"的问题。
-CONTENT_LABEL_W = 716
-CONTENT_TEXT_W = CONTENT_LABEL_W - 28
-
-
-def _load_qss(widget: QWidget):
-    try:
-        with open(resource_path("ui/style.qss"), encoding="utf-8") as f:
-            widget.setStyleSheet(f.read())
-    except OSError:
-        pass
 
 
 # ============================================================
@@ -121,14 +129,23 @@ class InputDialog(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self._init_ui()
-        _load_qss(self)
+
+    def set_aux_buttons_visible(self, visible: bool):
+        """控制「历史记录」「工作台」两个依赖主程序接线的辅助按钮。
+
+        组件预览窗是独立实例，这两条信号没有接收者；把按钮藏起来，
+        比留两个点了没反应的摆设更诚实。
+        """
+        self._history_btn.setVisible(bool(visible))
+        self._workspace_btn.setVisible(bool(visible))
 
     def _init_ui(self):
         self._panel = QWidget(self)
         self._panel.setObjectName("inputPanel")
         row = QHBoxLayout(self._panel)
-        row.setContentsMargins(10, 6, 8, 6)
-        row.setSpacing(6)
+        row.setContentsMargins(theme.SP["m"], theme.SP["s"],
+                               theme.SP["s"], theme.SP["s"])
+        row.setSpacing(theme.SP["s"])
 
         # 「历史记录」按钮：打开聊天记录面板（与输入框等高，竖边加长）
         self._history_btn = QPushButton("历史记录", self._panel)
@@ -144,6 +161,7 @@ class InputDialog(QWidget):
         self._edit.setObjectName("inputEdit")
         self._edit.setPlaceholderText("想让我做什么？回车发送～")
         self._edit.setFixedHeight(INPUT_ROW_HEIGHT)
+        self._edit.setMinimumWidth(INPUT_EDIT_MIN_W)
         self._edit.returnPressed.connect(self._on_submit)
         row.addWidget(self._edit, 1)
 
@@ -161,7 +179,7 @@ class InputDialog(QWidget):
         try:
             from .icons import icon as _icon
             from PyQt5.QtCore import QSize as _QSize
-            self._workspace_btn.setIcon(_icon("maximize", "#D9A066", 15))
+            self._workspace_btn.setIcon(_icon("maximize", theme.T("FLOAT_TEXT"), 15))
             self._workspace_btn.setIconSize(_QSize(15, 15))
         except Exception:      # noqa: BLE001 图标失败不影响按钮功能
             pass
@@ -174,16 +192,23 @@ class InputDialog(QWidget):
         row.addWidget(self._workspace_btn)
 
         wrapper = QVBoxLayout(self)
-        wrapper.setContentsMargins(6, 6, 6, 6)
+        wrapper.setContentsMargins(theme.SP["s"], theme.SP["s"],
+                                   theme.SP["s"], theme.SP["s"])
         wrapper.addWidget(self._panel)
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)
         shadow.setOffset(0, 3)
-        shadow.setColor(QColor(80, 60, 40, 80))
+        shadow.setColor(theme.Q("SHADOW"))
         self._panel.setGraphicsEffect(shadow)
 
-        self.setFixedSize(INPUT_WIDTH, 60)
+        # 总高 = 行高 + 面板上下内边距 + 外层上下留白：边距从布局本身读，
+        # 不在注释里再抄一遍数字，改了上面这里不会悄悄对不上
+        pm = row.contentsMargins()
+        wm = wrapper.contentsMargins()
+        total_h = INPUT_ROW_HEIGHT + pm.top() + pm.bottom() \
+            + wm.top() + wm.bottom()
+        self.setFixedSize(INPUT_WIDTH, total_h)
 
     # ============================================================
     # 显示 / 跟随
@@ -258,14 +283,14 @@ class HistoryPanel(QWidget):
         self._pet_pos = None
         self._expanded = set()      # 已展开的长回复 (pair_index, role)，刷新不丢
         self._init_ui()
-        _load_qss(self)
 
     def _init_ui(self):
         self._panel = QWidget(self)
         self._panel.setObjectName("historyPanel")
         outer = QVBoxLayout(self._panel)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(PANEL_INNER_MARGIN, theme.SP["m"],
+                                 PANEL_INNER_MARGIN, theme.SP["m"])
+        outer.setSpacing(theme.SP["s"])
 
         # ---- 标题行 ----
         head = QHBoxLayout()
@@ -281,7 +306,9 @@ class HistoryPanel(QWidget):
         self._clear_btn.setCursor(Qt.PointingHandCursor)
         self._clear_btn.clicked.connect(self._clear_history)
         head.addWidget(self._clear_btn)
-        close = QPushButton("✕")
+        close = QPushButton("")
+        close.setIcon(stroke_icon("x", theme.T("FLOAT_MUTED"), 15))
+        close.setToolTip("关闭记录面板")
         close.setObjectName("historyClose")
         close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(self.hide)
@@ -302,13 +329,14 @@ class HistoryPanel(QWidget):
         outer.addWidget(tip)
 
         wrapper = QVBoxLayout(self)
-        wrapper.setContentsMargins(8, 8, 8, 8)
+        wrapper.setContentsMargins(PANEL_WRAP_MARGIN, PANEL_WRAP_MARGIN,
+                                   PANEL_WRAP_MARGIN, PANEL_WRAP_MARGIN)
         wrapper.addWidget(self._panel)
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(28)
         shadow.setOffset(0, 6)
-        shadow.setColor(QColor(80, 60, 40, 100))
+        shadow.setColor(theme.Q("SHADOW"))
         self._panel.setGraphicsEffect(shadow)
 
         self.setFixedSize(PANEL_WIDTH, PANEL_HEIGHT)
@@ -365,7 +393,7 @@ class HistoryPanel(QWidget):
         item.setFlags(Qt.NoItemFlags)
         label = QLabel(self._fmt_time(ts, full=True) + " · 新的对话")
         label.setObjectName("sessionHeader")
-        item.setSizeHint(QSize(PANEL_WIDTH - 72, 36))
+        item.setSizeHint(QSize(ITEM_W, 36))
         self._list.addItem(item)
         self._list.setItemWidget(item, label)
 
@@ -383,8 +411,8 @@ class HistoryPanel(QWidget):
         w = QWidget()
         w.setObjectName("historyItem")
         h = QHBoxLayout(w)
-        h.setContentsMargins(6, 4, 6, 4)
-        h.setSpacing(8)
+        h.setContentsMargins(ITEM_MARGIN, 4, ITEM_MARGIN, 4)
+        h.setSpacing(ITEM_GAP)
         if role != "user":
             h.addStretch()                       # 凌零的靠右，形成对话感
 
@@ -419,7 +447,8 @@ class HistoryPanel(QWidget):
         box.addLayout(top)
 
         # 长内容折叠：默认只显示开头，点按钮展开/收起（存完整原文可随时复原）
-        full = text or "…"
+        # 凌零的回复带 <p> 这类标签，这里和工作台气泡用同一份转换，两处看到同一句话
+        full = (text if role == "user" else plain_text(text)) or "…"
         expanded = (pair_index, role) in self._expanded
         folded = len(full) > FOLD_TEXT_LEN and not expanded
         content = QLabel(full[:FOLD_TEXT_LEN] + "……" if folded else full)
@@ -447,17 +476,16 @@ class HistoryPanel(QWidget):
         h.addLayout(box)
         if role == "user":
             icon = QLabel()
-            icon.setPixmap(_avatar("user", 28))
-            icon.setFixedSize(28, 28)
+            icon.setPixmap(_avatar("user", AVATAR_W))
+            icon.setFixedSize(AVATAR_W, AVATAR_W)
             h.addWidget(icon, 0, Qt.AlignTop)
 
-        # 条目宽度 = 面板 840 - 面板内边距等 72；总高 = 名称行 30
+        # 条目宽 = 上面按留白逐层加出来的 ITEM_W；总高 = 名称行 30
         # + 气泡真实高度 + （展开按钮一行）+ 条目上下留白 20
-        item_w = PANEL_WIDTH - 72
         height = 30 + self._content_height(content, CONTENT_TEXT_W) + 20
         if has_fold_btn:
             height += 26
-        item.setSizeHint(QSize(item_w, height))
+        item.setSizeHint(QSize(ITEM_W, height))
         if row is None:
             self._list.addItem(item)
         else:
@@ -490,14 +518,13 @@ class HistoryPanel(QWidget):
 
     @staticmethod
     def _content_height(content: QLabel, text_width: int) -> int:
-        """
-        计算内容气泡的真实排版高度（不封顶，长代码也能完整显示）。
+        """内容气泡的真实排版高度（不封顶，长代码也能完整显示）。
 
         三重防裁字：
-        1. ensurePolished 让 QSS 字体（19px）先生效，按默认字体量必然偏矮；
-        2. QLabel 自身 heightForWidth 与字体度量 boundingRect 两种算法取较大值
-          （前者是 Qt 排版引擎的真实答案，后者覆盖前者拿不到的情形）；
-        3. 在内边距之外再加 10px 安全余量——宁可底部多留白，绝不裁掉半行字。
+        1. ensurePolished 让 QSS 字体先生效，按默认字体量必然偏矮；
+        2. heightForWidth 与字体度量 boundingRect 两种算法取较大值
+          （前者是 Qt 排版引擎的答案，后者覆盖前者拿不到的情形）；
+        3. 内边距之外再加 CONTENT_SAFE_H 余量——宁可底部多留白，绝不裁半行。
         """
         content.ensurePolished()
         fm = content.fontMetrics()
@@ -505,12 +532,9 @@ class HistoryPanel(QWidget):
                                Qt.TextWordWrap, content.text()).height()
         h_hw = content.heightForWidth(max(60, text_width))
         h = max(h_fm, h_hw or 0)
-        if h <= 0:                           # 兜底估算
-            t = content.text()
-            chars = max(1, text_width // 10)  # 半角字符宽约 10px（19px 字号）
-            h = max(1, -(-len(t) // chars)) * 27
-        # QSS 气泡内边距与边框 20px + 安全余量 10px
-        return h + 30
+        if h <= 0:
+            h = fm.height()          # 空文本兜底：至少留一行
+        return h + CONTENT_CHROME_H + CONTENT_SAFE_H
 
     @staticmethod
     def _fmt_time(ts, full: bool = False) -> str:
@@ -541,13 +565,46 @@ class HistoryPanel(QWidget):
         except RuntimeError:
             pass    # 列表已刷新/面板已关闭，按钮控件已销毁
 
+    def _flash(self, message: str):
+        """在标题行的计数标签上短暂显示一条操作结果，随后恢复条数。"""
+        self._count_label.setText(message)
+
+        def _restore():
+            try:
+                pairs = self._memory.get_pairs() if self._memory else []
+                self._count_label.setText("共 %d 条" % len(pairs))
+            except RuntimeError:
+                pass    # 面板已关闭，标签控件已销毁
+        QTimer.singleShot(2600, _restore)
+
+    def _confirm_clear(self, count: int) -> bool:
+        """清空是不可逆操作，先确认一次；单独成方法便于离屏测试替换。"""
+        from PyQt5.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle("清空聊天记录")
+        box.setText("确定清空全部 %d 轮对话记录吗？" % count)
+        box.setInformativeText("此操作不可撤销，长期记忆与偏好不受影响。")
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        return box.exec_() == QMessageBox.Yes
+
     def _delete_pair(self, pair_index: int):
-        """删除第 pair_index 轮对话（问+答一起），并刷新列表"""
+        """删除第 pair_index 轮对话（问+答一起），并给出结果。"""
         if self._memory and self._memory.delete_pair(pair_index):
             self.refresh_history()
+            self._flash("✓ 已删除这一轮对话")
+        else:
+            self._flash("! 删除失败：这一轮记录已不存在")
 
     def _clear_history(self):
-        """清空保存的记录"""
-        if self._memory:
-            self._memory.clear()
-            self.refresh_history()
+        """清空保存的记录：空列表、取消、成功三种情况都有可见反馈。"""
+        pairs = self._memory.get_pairs() if self._memory else []
+        if not pairs:
+            self._flash("本来就没有记录可清空")
+            return
+        if not self._confirm_clear(len(pairs)):
+            self._flash("已取消，记录未改动")
+            return
+        self._memory.clear()
+        self.refresh_history()
+        self._flash("✓ 已清空 %d 轮对话" % len(pairs))

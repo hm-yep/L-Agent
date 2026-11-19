@@ -182,17 +182,19 @@ class TestCoverage:
         cov = effect_journal.coverage(VALID_ACTIONS)
         assert cov["unknown"] == [], f"这些动作没进任何可逆性分类：{cov['unknown']}"
 
-    def test_three_buckets_partition_the_action_pool(self):
+    def test_buckets_partition_the_action_pool(self):
         cov = effect_journal.coverage(VALID_ACTIONS)
-        total = (len(cov["reversible"]) + len(cov["blind"])
-                 + len(cov["no_effect"]) + len(cov["undo"]))
+        total = (len(cov["reversible"]) + len(cov["restorable"])
+                 + len(cov["blind"]) + len(cov["no_effect"])
+                 + len(cov["undo"]))
         assert total == len(VALID_ACTIONS)
         assert len(cov["reversible"]) > 0 and len(cov["blind"]) > 0
+        assert "edit_doc" in cov["restorable"]
 
     def test_no_action_is_counted_twice(self):
         cov = effect_journal.coverage(VALID_ACTIONS)
-        flat = (cov["reversible"] + cov["blind"] + cov["no_effect"]
-                + cov["undo"])
+        flat = (cov["reversible"] + cov["restorable"] + cov["blind"]
+                + cov["no_effect"] + cov["undo"])
         assert len(flat) == len(set(flat))
 
 

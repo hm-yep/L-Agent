@@ -17,7 +17,9 @@ from PyQt5.QtWidgets import (
 )
 
 from framework import config
-from framework.utils import resource_path, logger
+from framework.utils import plain_text, resource_path, logger
+from . import theme
+from .icons import icon_label
 
 
 # ============================================================
@@ -26,7 +28,7 @@ from framework.utils import resource_path, logger
 class BubbleWidget(QWidget):
     """角色头顶的漫画气泡：显示 3~4 秒后自动淡出，出现时带气泡音"""
 
-    MAX_TEXT_WIDTH = 430     # 文本区最大宽度（超宽自动换行）
+    MAX_TEXT_WIDTH = theme.DIM["float_bubble_text_w"]   # 文本区最大宽度（超宽自动换行）
 
     def __init__(self, parent=None, sound=None):
         super().__init__(parent)
@@ -39,14 +41,16 @@ class BubbleWidget(QWidget):
         panel = QWidget(self)
         panel.setObjectName("bubblePanel")
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(18, 13, 18, 13)
+        m = theme.SP
+        panel_layout.setContentsMargins(m["xl"], m["m"], m["xl"], m["m"])
         self._label = QLabel(panel)
         self._label.setObjectName("bubbleLabel")
         self._label.setWordWrap(True)
         panel_layout.addWidget(self._label)
 
+        tail_h = self._tail_h = m["m"]   # 底部三角尾巴高度
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 12)   # 底部留出三角尾巴空间
+        outer.setContentsMargins(0, 0, 0, tail_h)
         outer.addWidget(panel)
 
         # 淡出动画
@@ -60,21 +64,16 @@ class BubbleWidget(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._fade_out)
 
-        # 手动算尺寸时需要的布局边距（文本边距 + 底部尾巴高度）
-        self._pad_lr = 18 + 18
-        self._pad_tb = 13 + 13 + 12
-
-        # 样式
-        from framework.utils import resource_path as rp
-        try:
-            with open(rp("ui/style.qss"), encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
-        except OSError:
-            pass
+        # 手动算尺寸时需要的边距：直接从上面两个布局读，避免两处数字各写一遍
+        pm = panel_layout.contentsMargins()
+        self._pad_lr = pm.left() + pm.right()
+        self._pad_tb = pm.top() + pm.bottom() + tail_h
+        # 样式由 ui/theme.py 装到 QApplication 上统一生效，这里不再单独加载
 
     # ------------------------------------------------------------
     def show_text(self, text: str, pet_x: int, pet_y: int):
         """显示气泡文本，锚定在角色头顶"""
+        text = plain_text(text)
         self._label.setText(text)
         self._resize_for_text(text)
         self._place_above(pet_x, pet_y)
@@ -152,19 +151,28 @@ class BubbleWidget(QWidget):
         self._fade.start()
 
     def paintEvent(self, event):
-        """绘制指向角色的三角尾巴"""
+        """绘制指向角色的三角尾巴：填浮层底色，只描两条斜边，不压住面板上沿"""
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QColor(255, 255, 255, 245))
-        painter.setPen(QColor(232, 185, 106))
-        tail = QPainterPath()
         w, h = self.width(), self.height()
-        tail.moveTo(w / 2 - 10, h - 12)
-        tail.lineTo(w / 2, h - 1)
-        tail.lineTo(w / 2 + 10, h - 12)
-        tail.closeSubpath()
-        painter.drawPath(tail)
+        base, half = h - self._tail_h, 10
+        left, right, tip = (w / 2 - half, base), (w / 2 + half, base), (w / 2, h - 1)
+        fill = QPainterPath()
+        fill.moveTo(*left)
+        fill.lineTo(*tip)
+        fill.lineTo(*right)
+        fill.closeSubpath()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme.Q("FLOAT_BG"))
+        painter.drawPath(fill)
+        edge = QPainterPath()
+        edge.moveTo(*left)
+        edge.lineTo(*tip)
+        edge.lineTo(*right)
+        painter.setPen(theme.Q("FLOAT_BORDER"))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(edge)
 
 
 # ============================================================
@@ -187,13 +195,14 @@ class InfoCardWidget(QWidget):
         panel = QWidget(self)
         panel.setObjectName("cardPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(16, 12, 12, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(theme.SP["l"], theme.SP["m"],
+                                  theme.SP["m"], theme.SP["m"])
+        layout.setSpacing(theme.SP["s"])
 
         # 标题行：名称 + 关闭按钮
         top = QHBoxLayout()
         self._title = QLabel(panel)
-        self._title.setObjectName("cardTitle")
+        self._title.setObjectName("cardTitleFloat")
         top.addWidget(self._title)
         top.addStretch()
         close_btn = QPushButton("×", panel)
@@ -202,12 +211,13 @@ class InfoCardWidget(QWidget):
         close_btn.clicked.connect(self.close)
         top.addWidget(close_btn)
         layout.addLayout(top)
+        self._top = top
 
         # 路径 + 大小
         self._path = QLabel(panel)
         self._path.setObjectName("cardPath")
         self._path.setWordWrap(True)
-        self._path.setMaximumWidth(360)
+        self._path.setMaximumWidth(theme.DIM["card_path_w"])
         layout.addWidget(self._path)
 
         self._size = QLabel(panel)
@@ -215,26 +225,24 @@ class InfoCardWidget(QWidget):
         layout.addWidget(self._size)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setContentsMargins(theme.SP["m"], theme.SP["m"],
+                                 theme.SP["m"], theme.SP["m"])
         outer.addWidget(panel)
+        # 横向 chrome = 外层留白 + 面板留白；从布局读回，改令牌不会算错
+        _o_l, _, _o_r, _ = outer.getContentsMargins()
+        _p_l, _, _p_r, _ = layout.getContentsMargins()
+        self._chrome_w = _o_l + _o_r + _p_l + _p_r
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(22)
         shadow.setOffset(0, 4)
-        shadow.setColor(QColor(80, 60, 40, 90))
+        shadow.setColor(theme.Q("SHADOW"))
         panel.setGraphicsEffect(shadow)
 
         # 自动关闭（5~8 秒）
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self.close)
-
-        from framework.utils import resource_path as rp
-        try:
-            with open(rp("ui/style.qss"), encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
-        except OSError:
-            pass
 
     # ------------------------------------------------------------
     def show_card(self, title: str, path: str = "", size: str = "",
@@ -264,24 +272,31 @@ class InfoCardWidget(QWidget):
         self._auto_timer.start(config.CARD_DURATION)
 
     def _resize_path(self, path: str):
-        """路径标签限宽换行手动算尺寸（避开 wordWrap+adjustSize 的压条缺陷）"""
+        """路径标签限宽换行手动算尺寸（避开 wordWrap+adjustSize 的压条缺陷）
+
+        宽度还要单独保证容得下标题行：标题不换行，一旦卡片只按路径算宽，
+        短路径 + 长文件名就会把标题压成一条缝（实测 157px 的字只剩 17px）。
+        """
+        max_w = theme.DIM["card_path_w"]
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
         self._path.setMinimumSize(0, 0)
         self._path.setMaximumSize(16777215, 16777215)
         self._path.ensurePolished()
         fm = self._path.fontMetrics()
-        if fm.horizontalAdvance(path) <= 360:
+        if fm.horizontalAdvance(path) <= max_w:
             self._path.setFixedSize(fm.horizontalAdvance(path) + 2,
                                     fm.height() + 2)
         else:
-            rect = fm.boundingRect(0, 0, 360, 1000000,
+            rect = fm.boundingRect(0, 0, max_w, 1000000,
                                    Qt.TextWordWrap, path)
             self._path.setFixedSize(rect.width() + 2, rect.height() + 2)
-        # 立即重算布局再取 sizeHint（否则缓存滞后一轮，窗口尺寸不刷新）
+        # 标题行需要的最小宽：让布局自己算（标题 + 两处行间距 + 关闭按钮），
+        # 再补上横向留白。手工数间距会漏掉 stretch 两侧各一份。
+        need_w = self._top.sizeHint().width() + self._chrome_w
         self.layout().activate()
-        self.adjustSize()
-        self.setFixedSize(self.sizeHint())
+        w = max(self._path.width() + self._chrome_w, need_w)
+        self.setFixedSize(w, self.layout().sizeHint().height())
 
 
 # ============================================================
@@ -337,8 +352,9 @@ class SettingsDialog(QWidget):
         self._panel = panel
         panel.installEventFilter(self)      # 面板空白处按下也能拖动整窗
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(22, 16, 22, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(theme.SP["xxl"], theme.SP["l"],
+                                  theme.SP["xxl"], theme.SP["l"])
+        layout.setSpacing(theme.SP["m"])
 
         # ---- 标题栏：标题 + 右上角关闭按钮 ----
         title_row = QHBoxLayout()
@@ -356,9 +372,14 @@ class SettingsDialog(QWidget):
         layout.addLayout(title_row)
 
         # ================= AI 配置 =================
-        ai_title = QLabel("🤖 DeepSeek AI 配置")
+        ai_icon = icon_label("robot", theme.T("ACCENT"), 17)
+        ai_title = QLabel("DeepSeek AI 配置")
         ai_title.setObjectName("settingsTitle")
-        layout.addWidget(ai_title)
+        ai_row = QHBoxLayout()
+        ai_row.setSpacing(theme.SP["s"])
+        ai_row.addWidget(ai_icon)
+        ai_row.addWidget(ai_title, 1)
+        layout.addLayout(ai_row)
 
         # API Key（可切换明文/密文）
         layout.addWidget(QLabel("API Key："))
@@ -403,10 +424,11 @@ class SettingsDialog(QWidget):
         test_row.addWidget(self._ai_status)
         layout.addLayout(test_row)
 
-        # 分隔线
-        sep = QLabel("")
+        # 分隔线：复用全局 QSS 里的 #hline，不再写行内样式
+        sep = QFrame()
+        sep.setObjectName("hline")
+        sep.setFrameShape(QFrame.HLine)
         sep.setFixedHeight(1)
-        sep.setStyleSheet("background-color:#e8cfa5;")
         layout.addWidget(sep)
 
         # 性格切换
@@ -506,6 +528,7 @@ class SettingsDialog(QWidget):
         save = QPushButton("保存")
         save.setObjectName("settingsButton")
         save.clicked.connect(self._save)
+        self._save_btn = save
         exit_btn = QPushButton("退出")
         exit_btn.setObjectName("exitButton")
         exit_btn.clicked.connect(self.exit_requested.emit)
@@ -513,13 +536,6 @@ class SettingsDialog(QWidget):
         btns.addWidget(save)
         btns.addWidget(exit_btn)
         layout.addLayout(btns)
-
-        from framework.utils import resource_path as rp
-        try:
-            with open(rp("ui/style.qss"), encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
-        except OSError:
-            pass
 
     # ------------------------------------------------------------
     # 尺寸与位置
@@ -656,7 +672,16 @@ class SettingsDialog(QWidget):
         self.sound_changed.emit(self._sound.isChecked())
         self.volume_changed.emit(self._volume.value() / 100.0)
         self.ai_config_changed.emit(*self._current_ai_config())
-        self.close()
+        # 原来保存后窗口立刻消失，用户分不清是「保存成功」还是「取消/崩了」。
+        # 先在按钮上给一句可见结果，再延时关闭，下次打开时按钮已复位。
+        self._save_btn.setText("已保存 ✓")
+        self._save_btn.setEnabled(False)
+
+        def _finish():
+            self._save_btn.setText("保存")
+            self._save_btn.setEnabled(True)
+            self.close()
+        QTimer.singleShot(900, _finish)
         logger.info("[Settings] 设置已保存")
 
     def keyPressEvent(self, event):

@@ -15,14 +15,18 @@
 """
 
 from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal
+import importlib
 import os
 import re
+import threading
 import time
 
 from framework import config
 from framework import effect_journal, skill_store
 from framework.action_parser import parse_actions
 from framework.ai_engine import AIWorker
+from framework.grant_service import (DECISION_DENY, DECISION_FILE,
+                                    DECISION_TREE, GrantService)
 from framework.memory_system import MemorySystem
 from framework.pet_controller import PetController
 from framework.system_controller import SystemController
@@ -209,9 +213,18 @@ class _VisionWorker(QThread):
                 pass
 
 
+# 三个开关背后要实例化的子系统：config 属性 → (实例属性名, 模块, 类名)。
+# 建对象只在开关为真时发生；建不起来就置 None 降级。
+# 另两个开关（PLAN_DAG_ENABLED / EFFECT_SPEC_STRICT）只控制调用点分支，不建对象。
+CAPABILITY_STORES = {
+    "TRAJECTORY_ENABLED": ("trajectory", "framework.trajectory", "TrajectoryStore"),
+    "PREFERENCE_LEARNING": ("prefs", "framework.preference", "PreferenceStore"),
+    "EVOLUTION_ENABLED": ("rules", "framework.evolution", "RuleStore"),
+}
+
+
 class Framework(QObject):
     """框架总控：串联 AI 引擎 / 动作解析 / 宠物控制 / 系统控制 / 记忆"""
-
     _instance = None
 
     # ------------------------------------------------------------
@@ -224,6 +237,9 @@ class Framework(QObject):
     pose_requested = pyqtSignal(str)            # 切换动画姿态 (pose)
     screenshot_hide = pyqtSignal()              # 截图前：隐藏所有助手窗口（不入镜）
     screenshot_restore = pyqtSignal()           # 截图后：恢复助手窗口显示
+    # 授权：桌面浮层卡片与网页确认条共用这一个入口（ADR 0007）
+    grant_requested = pyqtSignal(dict)          # 要用户点头 {gid,path,name,dir,...}
+    grant_resolved = pyqtSignal(str, str)       # 答完了 (gid, decision)
 
     @classmethod
     def instance(cls):
@@ -261,6 +277,18 @@ class Framework(QObject):
         self._plan_round_pending = False            # 已有一轮计划请求在途
         self._suppress_fallback = False             # 计划轮次不走意图兜底
         self.plan_card = None                       # 常驻计划卡（ui/plan_card.py，懒加载）
+        # ---- 会话内授权（F2/F3）：唯一真源是 grant_service，桌面与网页共用 ----
+        self.grant_service = GrantService()         # 授权记录 + 待决请求登记表
+        self.grants = self.grant_service.store      # 已放开的路径（只在内存里）
+        self._grant_queues = {}                     # gid → 等授权时暂存的那份动作队列
+        self._grant_cards = {}                      # gid → 授权浮层卡（一条请求一张）
+        self._grant_anchor = None                   # 跨进程锚点（网页端靠它共用授权）
+        self._grant_timer = QTimer(self)
+        self._grant_timer.setInterval(5000)
+        self._grant_timer.timeout.connect(self._grant_expire_tick)
+        self._grant_timer.start()
+        self.grant_requested.connect(self._on_grant_requested)
+        self.grant_resolved.connect(self._on_grant_resolved)
         self._busy = False                          # 正在执行动作序列
         self._finish_done = False                   # 当前动作是否已收尾（防重复推进）
         # 以前这个字段只在 _run_next_action 里动态创建，收尾处只能靠
@@ -285,6 +313,9 @@ class Framework(QObject):
         self._turn_actions = []                     # 本轮跑过的动作名（含不可见后果）
         self._last_undo = None                      # {"items","spots"}，撤一次就清空
         self._effects_spoken = False                # 本轮是否已播报过差集
+        # 读取证据：本轮读到了什么（工作台对话页据此渲染证据卡）
+        self._turn_evidence = None
+        self._read_log = []                         # 最近 50 条读取记录（本机访问页用）
         # 技能层：上一轮的动作序列（用户说"存成技能"时拿它抽骨架）+ 技能库
         self._last_turn_actions = []
         self._last_turn_text = ""                   # 那轮的原话（技能名从这来）
@@ -300,24 +331,12 @@ class Framework(QObject):
         self._current_world_hash = None
         self._turn_journaled = False
         self._traj_ledger_written = False
-        try:
-            if config.TRAJECTORY_ENABLED:
-                from framework.trajectory import TrajectoryStore
-                self.trajectory = TrajectoryStore()
-        except Exception as e:      # noqa: BLE001 新能力绝不拖垮桌面版
-            logger.warning(f"[Framework] 轨迹子系统不可用（已降级）: {e}")
-        try:
-            if config.PREFERENCE_LEARNING:
-                from framework.preference import PreferenceStore
-                self.prefs = PreferenceStore()
-        except Exception as e:      # noqa: BLE001
-            logger.warning(f"[Framework] 偏好子系统不可用（已降级）: {e}")
-        try:
-            if config.EVOLUTION_ENABLED:
-                from framework.evolution import RuleStore
-                self.rules = RuleStore()
-        except Exception as e:      # noqa: BLE001
-            logger.warning(f"[Framework] 进化子系统不可用（已降级）: {e}")
+        # 偏好的大模型批量抽取：轮次游标 + 在途标记（同一时刻最多一个请求）
+        self._pref_turn_seq = 0
+        self._pref_llm_busy = False
+        for attr in CAPABILITY_STORES:
+            if getattr(config, attr):
+                self._open_capability(attr)
 
         # 任务台：提醒 + 待办（JSON 持久化），定时轮询到期提醒
         self.tasks = TaskBoard()
@@ -334,6 +353,9 @@ class Framework(QObject):
             "set_emotion": lambda kind: None,   # 情绪表情叠加（可选注册）
         }
 
+        # 跨进程授权锚点：网页端靠它与桌面共用同一份授权记录（ADR 0007）
+        self._start_grant_anchor()
+
         logger.info("[Framework] 初始化完成 "
                     f"(USE_REAL_AI={config.USE_REAL_AI}, "
                     f"USE_REAL_SYSTEM={config.USE_REAL_SYSTEM})")
@@ -345,6 +367,48 @@ class Framework(QObject):
         """注册回调: show_bubble / set_pose / show_card"""
         if name in self._callbacks:
             self._callbacks[name] = func
+
+    # ============================================================
+    # 能力开关（工作台「当前开关」页的五个按钮走这里）
+    # ============================================================
+    def _open_capability(self, attr: str) -> bool:
+        """按开关实例化对应子系统；建不起来只降级为 None，不拖垮主链路。"""
+        slot, mod_name, cls_name = CAPABILITY_STORES[attr]
+        try:
+            store_cls = getattr(importlib.import_module(mod_name), cls_name)
+            setattr(self, slot, store_cls())
+            return True
+        except Exception as e:      # noqa: BLE001 新能力绝不拖垮桌面版
+            logger.warning(f"[Framework] {mod_name} 不可用（已降级）: {e}")
+            setattr(self, slot, None)
+            return False
+
+    def set_capability(self, attr: str, on: bool):
+        """翻一个能力开关：改内存 → 建/撤子系统 → 落盘。
+
+        返回 (是否成功, 给用户看的一句话)。要让开关不是摆设，两头都得管：
+        调用点有的只看 config.X（关了就立刻停），有的只看对象在不在
+        （例如 _traj_event、web_search 的偏好闸门），所以关掉时把对象撤掉、
+        打开时当场把对象建起来，两边都不需要重启。
+        """
+        if attr not in config.CAPABILITY_KEYS:
+            return False, "不认识这个开关：%s" % attr
+        key = config.CAPABILITY_KEYS[attr]
+        slot = CAPABILITY_STORES.get(attr, (None,))[0]
+        old_flag = bool(getattr(config, attr))
+        old_store = getattr(self, slot) if slot else None
+        if on and slot and old_store is None:
+            if not self._open_capability(attr):
+                return False, "子系统初始化失败，保持关闭"
+        setattr(config, attr, bool(on))
+        if slot and not on:
+            setattr(self, slot, None)     # 关掉=子系统当场不在场
+        if not config.save_user_settings(**{key: bool(on)}):
+            setattr(config, attr, old_flag)      # 没存上就整个退回原样
+            if slot:
+                setattr(self, slot, old_store)
+            return False, "开关已改但没写进配置文件（看 logs）"
+        return True, "已%s（已存盘，下次启动同样）" % ("开启" if on else "关闭")
 
     # ============================================================
     # 便捷接口
@@ -516,6 +580,60 @@ class Framework(QObject):
                 self.tasks.log_work("preference", f"自动记下偏好：{keys}")
         except Exception as e:      # noqa: BLE001
             logger.warning(f"[Framework] 偏好学习失败（已忽略）: {e}")
+
+        try:
+            self._maybe_llm_preferences()
+        except Exception as e:      # noqa: BLE001
+            logger.debug(f"[Framework] LLM 偏好抽取调度失败（已忽略）: {e}")
+
+    def _maybe_llm_preferences(self):
+        """每 N 轮把最近对话投给模型，补一层规则抓不到的开放式偏好。
+
+        规则层听得懂「以后都用深色」，听不懂「我是做财务的，别讲实现细节」。
+        这一层就是补后者：模型读出语义，再由 preference.observe_batch 用
+        原话引用逐条核对，编出来的一律丢弃。
+
+        三个必须遵守的约束：
+        - **异步**：抽取要一次网络往返，绝不能卡住当前这句回复；
+        - **单飞**：_pref_llm_busy 保证同一时刻最多一个在途请求，连发十句
+          也只会补抽一次，不会打出一串并发调用；
+        - **静默**：没配 Key、失败、模型返回垃圾，全部当没发生。
+        """
+        if not (config.PREFERENCE_LEARNING and config.PREFERENCE_LLM):
+            return
+        if self.prefs is None or not getattr(config, "DEEPSEEK_API_KEY", ""):
+            return
+        every = max(1, int(getattr(config, "PREFERENCE_LLM_EVERY", 3)))
+        self._pref_turn_seq = int(self._pref_turn_seq or 0) + 1
+        if self._pref_turn_seq % every != 0 or self._pref_llm_busy:
+            return
+        try:
+            turns = [dict(t) for t in (self.memory.history or [])[-8:]]
+        except Exception:           # noqa: BLE001
+            return
+        if not turns:
+            return
+
+        self._pref_llm_busy = True
+        turn_id = self._current_turn_id
+
+        def _worker():
+            try:
+                from framework import ai_engine
+                changed = self.prefs.observe_batch(
+                    turns, ai_engine.extract_preferences_llm,
+                    source_turn=turn_id) or []
+                if changed and config.PREFERENCE_NOTIFY:
+                    keys = "、".join(str(p.get("key")) for p in changed[:3])
+                    self.tasks.log_work("preference",
+                                        f"从对话里归纳出偏好：{keys}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[Framework] LLM 偏好抽取失败（已忽略）: {e}")
+            finally:
+                self._pref_llm_busy = False
+
+        threading.Thread(target=_worker, name="pref-llm",
+                         daemon=True).start()
 
     def _adjust_action(self, action: dict):
         """执行前：应用偏好与进化规则，并做契约前置校验。返回 None = 跳过。"""
@@ -1019,7 +1137,12 @@ class Framework(QObject):
         if not self._action_queue:
             # 一轮执行完毕：把本轮的回复整体记入历史（供折叠面板展示）
             if getattr(self, "_reply_parts", None) and self._current_user_text:
-                self.memory.add("assistant", " ".join(self._reply_parts))
+                meta = None
+                if self._turn_evidence:
+                    meta = {"evidence": self._turn_evidence}
+                    self._turn_evidence = None
+                self.memory.add("assistant", " ".join(self._reply_parts),
+                                meta=meta)
                 self._reply_parts = []
                 self.history_changed.emit()
             # 工作流启动请求：本轮收尾后作为新任务开跑（不与进行中的计划交叉）
@@ -1195,6 +1318,10 @@ class Framework(QObject):
             self._do_web_search(action)
         elif name == "read_doc":
             self._do_read_doc(action)
+        elif name == "list_dir":
+            self._do_list_dir(action)
+        elif name == "edit_doc":
+            self._do_edit_doc(action)
         elif name == "analyze_data":
             self._do_analyze_data(action)
         elif name == "work_log":
@@ -2305,6 +2432,218 @@ class Framework(QObject):
             self.plan_card.close()
             self.plan_card = None
 
+    # ============================================================
+    # 会话内授权（F2/F3）：唯一入口 ask_grant / answer_grant
+    # ============================================================
+    # 桌面浮层卡片与网页确认条都只是这两个方法的渲染，判定与状态只有一份；
+    # 网页端通过锚点调的就是它们，所以两端不分治（ADR 0007）。
+    def ask_grant(self, path: str, source: str = "desktop",
+                  action: dict = None) -> dict:
+        """这条路径要不要用户点头？返回判定结果。
+
+        - allow：已在白名单里，或本次会话已授权 → 直接读，不打扰用户；
+        - grant：需要点头 → 登记一条待决请求并弹卡，**立即返回不阻塞**；
+        - deny ：不读（敏感 / 不存在 / 格式不支持），理由可直接念给用户。
+
+        :param action: 桌面动作触发的请求时传原动作，队列会被暂存，
+                       用户答完再重跑（照 `_plan_pending_queue` 的做法）。
+        """
+        verdict, real_path, reason = self.grant_service.check(path)
+        if verdict != "grant":
+            return {"ok": True, "verdict": verdict, "path": real_path or "",
+                    "reason": reason, "gid": ""}
+        info = self.grant_service.request(real_path, source=source,
+                                          reason=reason)
+        if action is not None:
+            # 暂存动作队列：等用户点头这段时间不占着动作链，也不占看门狗。
+            # 按 gid 存，谁的请求只能恢复谁那一份——否则同时等回答的两条请求
+            # 会互相顶掉队列，后答的那条把先答的那条的工作吃掉。
+            self._grant_queues[info["gid"]] = [action] + list(self._action_queue)
+            self._action_queue = []
+            self._stop_chain_watchdog()
+            self._busy = False
+            self.set_pose("idle")
+        self.grant_requested.emit(info)
+        return {"ok": True, "verdict": "grant", "path": real_path,
+                "reason": reason, "gid": info["gid"],
+                "expires_in": info.get("expires_in", 0),
+                "name": info.get("name", ""), "dir": info.get("dir", "")}
+
+    def answer_grant(self, gid: str, decision: str) -> dict:
+        """回答一条授权请求（桌面卡片、网页确认条都走这里）。"""
+        res = self.grant_service.answer(gid, decision)
+        # 只有「第一次被回答」才广播。卡片关闭时也会补发一次拒绝，无条件广播
+        # 会把网页端刚落的「允许」覆盖成「拒绝」，动作链跟着被丢（ADR 0007）。
+        if res.get("newly"):
+            self.grant_resolved.emit(str(gid or ""), str(decision or ""))
+        return res
+
+    def grant_state(self) -> dict:
+        """当前授权状况（工作台「本机访问」页与锚点状态接口都用它）。"""
+        return {"grants": self.grant_service.list_grants(),
+                "pending": self.grant_service.pending(),
+                "stats": self.grant_service.stats()}
+
+    def revoke_grants(self) -> int:
+        """全部撤销本次会话放开的路径，返回清掉的条数。
+
+        撤完必须重新弹卡：判据只看授权记录，清空即回到「没授权」，
+        所以下一次读同一条路径仍会走 ask_grant。
+        """
+        count = self.grant_service.revoke_all()
+        logger.info(f"[Framework] 已撤销全部本机访问授权（{count} 条）")
+        return count
+
+    def read_log(self) -> list:
+        """最近的读取记录（本机访问页展示「实际读了什么」用）。"""
+        return [dict(item) for item in getattr(self, "_read_log", [])]
+
+    # ---- 授权卡（懒加载 ui/grant_card.GrantCard）----
+    def _open_grant_card(self, info: dict):
+        """一条请求一张卡：后来的请求不许顶掉还没回答的那张。"""
+        gid = str(info.get("gid") or "")
+        if not gid:
+            return
+        from ui.grant_card import GrantCard
+        card = self._grant_cards.get(gid)
+        if card is None:
+            card = GrantCard()
+            card.decided.connect(self._on_grant_decided)
+            self._grant_cards[gid] = card
+        # 已经亮着的卡叠在同一坐标上等于只有一张能用，按已开的张数错开
+        card.popup(info, *self._pet_pos(),
+                   cascade=max(0, len(self._grant_cards) - 1))
+
+    def _close_grant_card(self, gid: str):
+        card = self._grant_cards.pop(str(gid or ""), None)
+        if card is None:
+            return
+        try:
+            # 先标已决再关：closeEvent 会把「没答过的卡被关掉」当成用户点了拒绝，
+            # 而这张卡的答案已经落过一次，再补一发就把网页端的「允许」改成「拒绝」
+            card.mark_resolved()
+            card.close()
+            card.deleteLater()
+        except RuntimeError:      # C++ 对象可能已随窗口销毁
+            logger.warning(f"[Framework] 授权卡 {gid} 关闭时对象已销毁")
+
+    def _on_grant_requested(self, info: dict):
+        """（主线程）弹授权卡：三个按钮各是什么后果，先说清楚再让用户点。"""
+        try:
+            self._open_grant_card(info)
+        except Exception:  # noqa: BLE001 卡片坏掉也不能拖垮读文件
+            logger.exception("[Framework] 授权卡弹不出来")
+
+    def _on_grant_decided(self, gid: str, decision: str):
+        """用户在卡片上点了某个按钮。"""
+        self.answer_grant(gid, decision)
+
+    def _requeue_grant_actions(self, actions):
+        """把暂存的动作放回队列：没有链路在跑就整份放回，正在跑就插到队首。"""
+        actions = list(actions or [])
+        if not actions:
+            return
+        if self._busy and self._action_queue:
+            self._action_queue[:0] = [a for a in actions
+                                      if a not in self._action_queue]
+            return
+        self._action_queue = actions
+
+    def _on_grant_resolved(self, gid: str, decision: str):
+        """授权有结果了，把结果落回动作链。
+
+        Qt 槽里任何未捕获异常都会被 PyQt 直接 abort 掉整个进程（连 traceback
+        都不打），所以这层壳必须兜住——兜不住也要把「没读到」如实说出来。
+        """
+        try:
+            self._apply_grant_resolution(str(gid or ""), str(decision or ""))
+        except Exception:  # noqa: BLE001
+            logger.exception("[Framework] 授权收尾出错")
+            self.set_emotion("sweat")
+            self.show_bubble("刚才那条授权我没处理好，这个文件我没读，"
+                             "你可以再说一次。")
+
+    def _apply_grant_resolution(self, gid: str, decision: str):
+        """（主线程）只收这一条请求的卡，只恢复它自己那份队列。"""
+        info = self.grant_service.get(gid)
+        if info is None:
+            self._close_grant_card(gid)
+            return
+        # get() 给的是 PendingGrant 对象不是字典：写成 info.get(...) 会在 Qt
+        # 槽函数里抛 AttributeError，而 PyQt 对槽里的未捕获异常直接 abort 进程
+        timed_out = bool(info.timed_out)
+        self._close_grant_card(gid)
+        # queue is None 表示这条请求没暂存过桌面动作链（例如网页端发起的读取），
+        # 那种情况下桌面正在跑的链路一步都不该被它改动
+        queue = self._grant_queues.pop(gid, None)
+        self.grant_service.forget(gid)
+
+        if timed_out:
+            self.set_emotion("sweat")
+            self.show_bubble("刚才那个授权等太久没等到你确认，我按拒绝处理了。")
+        elif decision == DECISION_DENY:
+            self.set_emotion("sweat")
+            self.show_bubble("好，这个我不读。")
+        else:
+            self.set_emotion("happy")
+            self.show_bubble("好，这次会话里我就能读了。")
+
+        if queue is None:
+            return
+
+        if timed_out or decision == DECISION_DENY:
+            # 这一步没做成：如实记账（计划里标受阻），然后接着跑后面的动作
+            self._note_plan_failure("用户未授权读取本机文件")
+            self._requeue_grant_actions(queue[1:])
+            if not self._busy:
+                self._finish_done = False
+                self._finish_action()
+            return
+        # 允许：把刚才那个动作放回队首重跑（这次判据会放行）
+        self._requeue_grant_actions(queue)
+        if not self._busy:
+            self._busy = True
+            self._run_next_action()
+
+    def _grant_expire_tick(self):
+        """每 5 秒看一次有没有等太久的授权：到点按拒绝，并如实说出来。"""
+        try:
+            expired = self.grant_service.expire_due()
+        except Exception:  # noqa: BLE001 定时器异常不能拖垮主循环
+            return
+        for info in expired:
+            logger.info("[Framework] 授权超时，按拒绝处理: %s"
+                        % info.get("gid"))
+            self.grant_resolved.emit(info.get("gid", ""), DECISION_DENY)
+
+    # ---- 跨进程锚点（网页端靠它与桌面共用同一份授权记录）----
+    def _start_grant_anchor(self):
+        try:
+            from framework.grant_anchor import GrantAnchor
+            anchor = GrantAnchor(ask=self._anchor_ask,
+                                 answer=self._anchor_answer,
+                                 state=self._anchor_state,
+                                 revoke=self.revoke_grants)
+            if anchor.start():
+                self._grant_anchor = anchor
+                logger.info("[Framework] 授权锚点已启动: %s"
+                            % anchor.url("/grant/state"))
+        except Exception:  # noqa: BLE001 起不来就退回网页端自持模式
+            logger.warning("[Framework] 授权锚点启动失败"
+                           "（网页端将走自持模式）", exc_info=True)
+
+    def _anchor_ask(self, path: str, source: str = "web") -> dict:
+        """锚点回调（HTTP 线程）：要授权。判定与桌面完全同一套。"""
+        return self.ask_grant(path, source=source)
+
+    def _anchor_answer(self, gid: str, decision: str) -> dict:
+        """锚点回调（HTTP 线程）：用户答了。落授权 + 通知主线程恢复队列。"""
+        return self.answer_grant(gid, decision)
+
+    def _anchor_state(self) -> dict:
+        """锚点回调（HTTP 线程）：当前授权状况。"""
+        return self.grant_state()
+
     # ---- 确认 / 取消 / 完成 ----
     def _confirm_plan(self):
         plan = self._plan
@@ -2711,14 +3050,22 @@ class Framework(QObject):
             facts=self.memory.get_facts_text(), notes=self._notes_text())
 
     def _do_read_doc(self, action: dict):
-        """read_doc 动作：读取本机文档文字内容，存入资料缓冲并跟进回答"""
-        from framework.doc_editor import extract_content
-        from framework.path_guard import validate_read_path
+        """read_doc 动作：读取本机文档文字内容，存入资料缓冲并跟进回答
 
-        # path 来自模型输出，读到的数据会随下一轮发给第三方 LLM。
-        # 先过白名单：允许的目录、后缀、大小、敏感文件名，默认拒绝。
-        ok, path, reason = validate_read_path(action.get("path"))
-        if not ok:
+        判据走 `check_read` 三态（ADR 0006）：
+          allow → 直接读；grant → 暂存动作队列、弹授权卡，等用户点头再读；
+          deny  → 如实说明为什么不给读。
+        读取统一走 `framework.file_reader`：格式表、截断口径只有一份。
+        """
+        from framework import file_reader
+
+        # 批量读：paths 数组走带上下文预算的分支，每份截 N 字、最多 M 份
+        if action.get("paths"):
+            self._do_batch_read(action)
+            return
+
+        verdict, path, reason = self.grant_service.check(action.get("path"))
+        if verdict == "deny":
             self.set_emotion("sweat")
             if reason == "文件不存在":
                 self.show_bubble("这个文件不存在，确认一下完整路径？")
@@ -2727,47 +3074,21 @@ class Framework(QObject):
             self._note_plan_failure(f"文件路径被拒绝：{reason}")
             self._finish_action()
             return
-        ext = os.path.splitext(path)[1].lower()
-        try:
-            if ext in (".docx", ".pptx"):
-                kind, spec = extract_content(path)
-                if kind == "ppt":
-                    body = "\n".join(
-                        f"『{s['title']}』" + "；".join(s["bullets"])
-                        for s in spec.get("slides", []) if s.get("title"))
-                else:
-                    body = "\n".join(
-                        f"『{s['heading']}』" + "；".join(s["paragraphs"])
-                        for s in spec.get("sections", []) if s.get("heading"))
-            elif ext in (".txt", ".md", ".csv", ".json", ".log", ".py"):
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    body = f.read()
-            elif ext == ".xlsx":
-                from openpyxl import load_workbook
-                wb = load_workbook(path, read_only=True, data_only=True)
-                rows = []
-                for ws in wb.worksheets:
-                    rows.append(f"『{ws.title}』")
-                    for row in list(ws.iter_rows(values_only=True))[:100]:
-                        vals = [str(v) for v in row if v is not None]
-                        if vals:
-                            rows.append(" | ".join(vals))
-                body = "\n".join(rows)
-            else:
-                self.set_emotion("sweat")
-                self.show_bubble("这种格式我还读不了，目前支持 txt/md/csv/"
-                                 "json/docx/pptx/xlsx。")
-                self._note_plan_failure(f"文档格式 {ext or '未知'} 不支持")
-                self._finish_action()
-                return
-        except Exception as e:                  # noqa: BLE001 损坏/加密不崩助手
+        if verdict == "grant":
+            # 要用户点头：暂存动作队列 + 弹卡，立刻把控制权还给用户
+            self.ask_grant(path, source="desktop", action=action)
+            self.set_emotion("exclaim")
+            self.show_bubble("这个路径不在我平常能读的目录里，要你点一下头。")
+            return
+
+        res = file_reader.read(path)
+        if not res.get("ok"):
             self.set_emotion("sweat")
-            self.show_bubble(f"文件读不出来（{type(e).__name__}），"
-                             "确认它没有被占用或加密。")
-            self._note_plan_failure(f"文件读取失败（{type(e).__name__}）")
+            self.show_bubble(res.get("note") or "这份文件我读不出来。")
+            self._note_plan_failure(res.get("note") or "文件读取失败")
             self._finish_action()
             return
-        body = body.strip()[:config.READ_DOC_TEXT_MAX]
+        body = (res.get("text") or "").strip()[:config.READ_DOC_TEXT_MAX]
         if not body:
             self.set_emotion("sweat")
             self.show_bubble("文件里没读到文字内容。")
@@ -2777,6 +3098,7 @@ class Framework(QObject):
         name = os.path.basename(path)
         self._add_note(f"【本机文档 {name}】\n{body}")
         self.tasks.log_work("read_doc", f"阅读了《{name}》")
+        self._record_read_evidence(res, path, name)
         self.set_emotion("star")
         self.show_bubble(f"读完了《{name}》（约 {len(body)} 字），"
                          "资料已记下，我这就给你讲讲。")
@@ -2784,14 +3106,197 @@ class Framework(QObject):
         QTimer.singleShot(500, self._search_followup)
         self._finish_action()
 
+    def _do_batch_read(self, action: dict):
+        """一次读多份：先逐份过三态判据，再按上下文预算读，少读的如实报数。
+
+        安全上比单份更严：整批里只要有一份需要授权或终态拒绝，就先停在这里，
+        不会「偷偷读了能读的、只报一句部分成功」。需要授权时暂存整批动作，
+        用户答完从第一份重跑（授权状态已经落进 GrantStore）。
+        """
+        from framework import file_reader
+
+        raw = [str(p).strip().strip('"')
+               for p in (action.get("paths") or []) if str(p or "").strip()]
+        paths = raw[:12]
+        if not paths:
+            self.show_bubble("这几份文件我没看清路径，再说一遍？")
+            self._note_plan_failure("批量读取 paths 为空")
+            self._finish_action()
+            return
+
+        checked = []
+        for target in paths:
+            verdict, real, reason = self.grant_service.check(target)
+            if verdict == "deny":
+                self.set_emotion("sweat")
+                self.show_bubble(f"这批里有文件我不便读取（{reason}），"
+                                 "整批先不读了。")
+                self._note_plan_failure(f"批量读取路径被拒绝：{reason}")
+                self._finish_action()
+                return
+            if verdict == "grant":
+                self.ask_grant(real, source="desktop", action=action)
+                self.set_emotion("exclaim")
+                self.show_bubble("这批里有路径不在我平常能读的目录里，"
+                                 "点一下头我就接着读。")
+                return
+            checked.append(real)
+
+        res = file_reader.read_many(checked)
+        if not res.get("ok"):
+            self.set_emotion("sweat")
+            self.show_bubble(res.get("note") or "这几份我一份都没读出来。")
+            self._note_plan_failure(res.get("note") or "批量读取全部失败")
+            self._finish_action()
+            return
+
+        for item in res.get("items") or []:
+            if not item.get("ok"):
+                continue
+            # 每份单独入一条资料：单条上限 800 字，批量预算 600 字留足前缀余量
+            self._add_note("【本机文档 %s】\n%s"
+                           % (item.get("name") or "文件",
+                              item.get("text") or ""))
+        self._add_note("【批量读取】" + (res.get("note") or ""))
+
+        ev = dict(res.get("evidence") or {})
+        label = "批量 %d 份" % ev.get("total", len(checked))
+        self.tasks.log_work("read_doc", "批量读了 %s（实读 %s 份）"
+                            % (label, ev.get("read", 0)))
+        self._record_read_evidence(res, checked[0], label)
+        self.set_emotion("star")
+        self.show_bubble("读了 %d 份，%s 资料已记下。"
+                         % (ev.get("read", 0), res.get("note") or ""))
+        self._busy = True
+        QTimer.singleShot(500, self._search_followup)
+        self._finish_action()
+
+    def _record_read_evidence(self, res: dict, path: str, name: str):
+        """记下「实际读了什么」：列了几项、读了几页、跳过了什么、截断到多少字。
+
+        工作台的对话页把它渲染成读取证据卡——只说一句「读完了」，
+        用户无从判断到底读到了什么。
+        """
+        ev = dict(res.get("evidence") or {})
+        ev.update({"name": name, "path": path,
+                   "note": res.get("note") or "",
+                   "chars": len((res.get("text") or ""))})
+        self._turn_evidence = ev
+        self._read_log.append(dict(ev))
+        # 只留最近 50 条，避免本机路径无限堆积
+        if len(self._read_log) > 50:
+            del self._read_log[:-50]
+
+    def _do_list_dir(self, action: dict):
+        """list_dir 动作：列一个文件夹的一层内容（不读文件内容）"""
+        from framework import file_reader
+
+        verdict, path, reason = self.grant_service.check(action.get("path"))
+        if verdict == "deny":
+            self.set_emotion("sweat")
+            self.show_bubble(f"这个文件夹我列不了：{reason}。")
+            self._note_plan_failure(f"目录路径被拒绝：{reason}")
+            self._finish_action()
+            return
+        if verdict == "grant":
+            self.ask_grant(path, source="desktop", action=action)
+            self.set_emotion("exclaim")
+            self.show_bubble("这个文件夹不在我平常能读的目录里，要你点一下头。")
+            return
+
+        res = file_reader.list_dir(path)
+        if not res.get("ok"):
+            self.set_emotion("sweat")
+            self.show_bubble(res.get("note") or "这个文件夹列不出来。")
+            self._note_plan_failure(res.get("note") or "目录列取失败")
+            self._finish_action()
+            return
+        body = (res.get("text") or "").strip()
+        name = os.path.basename(path) or path
+        ev = dict(res.get("evidence") or {})
+        ev.update({"name": name, "path": path, "note": res.get("note") or "",
+                   "chars": len(body)})
+        self._turn_evidence = ev
+        self._read_log.append(dict(ev))
+        if len(self._read_log) > 50:
+            del self._read_log[:-50]
+        self._add_note(f"【目录 {name}】\n{body}")
+        self.tasks.log_work("list_dir", f"列了目录《{name}》")
+        self.set_emotion("star")
+        self.show_bubble(f"《{name}》里有 {ev.get('total', 0)} 项"
+                         + (f"，只列了前 {ev.get('listed', 0)} 项"
+                            if ev.get("skipped") else "")
+                         + "，名字记下了。")
+        self._busy = True
+        QTimer.singleShot(500, self._search_followup)
+        self._finish_action()
+
+    def _do_edit_doc(self, action: dict):
+        """模型可达的文档改写：复读原件 → 落副本记账 → 交给模型拟改写方案。
+
+        用户原件只读是硬规则：改写结果由 `_apply_doc_edit_result` 输出到
+        `_修改` 新文件，绝不覆盖原件。副本是给「可还原」这一类副作用留逆操作
+        （ADR 0008）：落副本失败就不许进入改写流程。
+        """
+        import shutil
+        from pathlib import Path
+        from framework import effect_journal
+        from framework.utils import app_data_dir
+
+        path = (action.get("path") or "").strip().strip('"')
+        instruction = (action.get("instruction") or "").strip()
+        if not path or not instruction:
+            self.set_emotion("sweat")
+            self.show_bubble("改写文件要说清两件事：哪个文件、怎么改。")
+            self._note_plan_failure("edit_doc 缺少 path 或 instruction")
+            self._finish_action()
+            return
+
+        verdict, real, reason = self.grant_service.check(path)
+        if verdict == "deny":
+            self.set_emotion("sweat")
+            self.show_bubble(f"这个文件我不便改写：{reason}。")
+            self._note_plan_failure(f"edit_doc 路径被拒绝：{reason}")
+            self._finish_action()
+            return
+        if verdict == "grant":
+            self.ask_grant(real, source="desktop", action=action)
+            self.set_emotion("exclaim")
+            self.show_bubble("这个文件不在我平常能读的目录里，改写前要你点一下头。")
+            return
+
+        try:
+            backup_dir = Path(app_data_dir()) / "doc_backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup = backup_dir / ("%s-%d%s" % (
+                Path(real).stem, int(time.time() * 1000), Path(real).suffix))
+            shutil.copy2(real, backup)
+        except Exception as e:              # noqa: BLE001 副本失败就不许改写
+            logger.warning(f"[Framework] 改写前副本失败 {real}: {e}")
+            self.set_emotion("sweat")
+            self.show_bubble("没能给原件留好副本，先不改这个文件，免得撤不回来。")
+            self._note_plan_failure("改写前落副本失败，已停止")
+            self._finish_action()
+            return
+
+        if isinstance(getattr(self, "_last_undo", None), list):
+            self._last_undo.append(effect_journal.file_edit_item(real, str(backup)))
+
+        self.request_doc_edit(real)
+        if self._doc_edit is None:
+            # request_doc_edit 已经给出了为什么打不开 / 没有可改内容
+            self._finish_action()
+            return
+        self._send_doc_edit(instruction)
+        self._finish_action()
+
     def _do_analyze_data(self, action: dict):
         """analyze_data 动作：pandas 分析本机表格，结论进资料缓冲、图表走交付卡片"""
         from framework import data_tool
-        from framework.path_guard import validate_read_path
         from framework.utils import human_size
 
-        ok, path, reason = validate_read_path(action.get("path"))
-        if not ok:
+        verdict, path, reason = self.grant_service.check(action.get("path"))
+        if verdict == "deny":
             self.set_emotion("sweat")
             if reason == "文件不存在":
                 self.show_bubble("这个表格文件不存在，确认一下完整路径？")
@@ -2799,6 +3304,11 @@ class Framework(QObject):
                 self.show_bubble(f"这份表格我不便读取：{reason}。")
             self._note_plan_failure(f"文件路径被拒绝：{reason}")
             self._finish_action()
+            return
+        if verdict == "grant":
+            self.ask_grant(path, source="desktop", action=action)
+            self.set_emotion("exclaim")
+            self.show_bubble("这个表格不在我平常能读的目录里，要你点一下头。")
             return
         try:
             res = data_tool.analyze(
@@ -2987,6 +3497,11 @@ class Framework(QObject):
                 self.plan_card = None
         except RuntimeError as e:
             logger.warning(f"[Framework] 关闭计划卡失败: {e}")
+        # 授权卡：逐张先标已决再关。直接关会让 closeEvent 在退出收尾阶段
+        # 补发一次「拒绝」，把动作链恢复逻辑拽回来打在已经销毁的窗口上。
+        for gid in list(self._grant_cards):
+            self._close_grant_card(gid)
+        self._grant_queues.clear()
         try:
             self.memory.save()
         except Exception as e:  # noqa: BLE001

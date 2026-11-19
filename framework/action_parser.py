@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """动作解析器：校验 AI 返回的动作序列
 
-动作池包含三十个动作，AI 返回的 JSON 经本校验后
+动作池包含三十二个动作，AI 返回的 JSON 经本校验后
 生成可执行的标准化动作列表（非法项被剔除/修正）。
 """
 
@@ -23,7 +23,8 @@ VALID_ACTIONS = {
     "see_screen", "remember", "show_plan",
     "remind", "todo_add", "todo_done", "todo_list",
     # ---- 联网检索 / 本机文档阅读 / 工作日志 / 工作流编排 ----
-    "web_search", "read_doc", "work_log", "run_workflow",
+    "web_search", "read_doc", "list_dir", "edit_doc", "work_log",
+    "run_workflow",
     # ---- 数据分析（表格统计与出图）----
     "analyze_data",
     # ---- 后悔药（撤销上一轮）/ 技能层（存一次，以后零规划重放）----
@@ -47,6 +48,8 @@ REQUIRED_PARAMS = {
     "todo_add": ["text"],
     "web_search": ["query"],
     "read_doc": ["path"],
+    "list_dir": ["path"],
+    "edit_doc": ["path", "instruction"],
     "run_workflow": ["name"],
     "analyze_data": ["path"],
     "run_skill": ["skill"],
@@ -85,6 +88,9 @@ PARAM_ALIASES = {
     "query":    ["query", "keyword", "search", "搜索词", "关键词", "问题", "查询"],
     "name":     ["name", "workflow", "template", "模板", "工作流"],
     "skill":    ["skill", "skill_name", "技能", "技能名", "name"],
+    # 改写指令（edit_doc）：模型常把「怎么改」写成 content / 要求 / 指令
+    "instruction": ["instruction", "content", "要求", "怎么改", "改什么",
+                    "修改要求", "指令", "说明", "改动", "edit", "修改说明"],
     # 文档保存位置（create_doc 可选）
     "location": ["location", "save_to", "save_dir",
                  "保存位置", "保存到", "存放位置", "位置"],
@@ -162,6 +168,16 @@ def normalize_action(item) -> dict | None:
 
     # 必填参数校验（带别名容错）
     for param in REQUIRED_PARAMS.get(action, []):
+        # read_doc 可一次读多份：paths 数组可以替代单个 path。模型常把「这几份」
+        # 写成数组，若仍强制 path 会把整批动作剔掉，批量入口就永远走不到。
+        if action == "read_doc" and param == "path":
+            batch = item.get("paths")
+            if isinstance(batch, (list, tuple)):
+                paths = [str(p).strip().strip('"') for p in batch
+                         if str(p or "").strip()]
+                if paths:
+                    normalized["paths"] = paths[:12]
+                    continue
         value = _get_param(item, param)
         if not value:
             logger.warning(f"[Parser] 动作 {action} 缺少参数 {param}，剔除")

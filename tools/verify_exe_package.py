@@ -134,6 +134,9 @@ for word in ("user_settings.json", "memory.json"):
     print(f"    [{'FAIL' if word.encode() in blob else 'PASS'}] 不含 {word}")
 
 # ---- 3. 资源是否齐全 ----
-for need in ("assets/icon.ico", "ui/style.qss"):
+for need in ("assets/icon.ico",):
     hit = [n for n in names if n.replace("\\", "/").endswith(need)]
     print(f"    [{'PASS' if hit else 'FAIL'}] 资源 {need}")
+# 样式不再有 .qss 数据文件，改由 ui/theme.py 拼全局样式表，所以查模块
+hit = "ui.theme" in mods
+print(f"    [{'PASS' if hit else 'FAIL'}] 主题令牌模块 ui.theme 入包")

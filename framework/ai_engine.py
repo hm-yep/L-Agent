@@ -10,12 +10,12 @@
 AI 配置项在运行时从 framework.config 读取，可在设置界面修改并持久化：
     api_key / base_url / model
 
-动作池（三十个动作）:
+动作池（三十二个动作）:
     search_app / open_app / show_bubble / jump / think / show_card / move_to / idle
     / screenshot / set_volume / shutdown / restart / lock / cancel_shutdown
     / create_doc / see_screen / remember / show_plan / remind / todo_add / todo_done
-    / todo_list / web_search / read_doc / work_log / run_workflow / analyze_data
-    / undo_last / save_skill / run_skill
+    / todo_list / web_search / read_doc / list_dir / edit_doc / work_log
+    / run_workflow / analyze_data / undo_last / save_skill / run_skill
 """
 
 import json
@@ -40,7 +40,7 @@ _RETRY_CODES = {429, 500, 502, 503, 504}
 # ------------------------------------------------------------
 # 系统提示词按职责拆成三块，便于分别维护：
 #   PROMPT_IDENTITY_AND_FORMAT  身份、能力边界、JSON 返回格式
-#   PROMPT_ACTION_POOL          30 个动作的参数与用法（tools/check_contracts.py
+#   PROMPT_ACTION_POOL          32 个动作的参数与用法（tools/check_contracts.py
 #                               会校验它覆盖了动作注册表里的每一个动作）
 #   PROMPT_RULES                重要规则、文档规范、说话风格
 # 拼接结果与原单体常量逐字相同；改动后请跑 tools/check_contracts.py。
@@ -116,8 +116,19 @@ PROMPT_ACTION_POOL = """【动作池】
     也用于为报告/PPT 收集素材。搜到的资料会自动进入你的工作上下文（【检索资料】），
     后续轮次可直接引用，不要在气泡里复述网址。
 24. {"action":"read_doc","path":"文件的完整路径"}            阅读用户本机的文档
-    （支持 txt/md/csv/json/docx/pptx/xlsx），内容会进入你的工作上下文（【检索资料】），
+    （支持 {READ_FORMATS}），内容会进入你的工作上下文（【检索资料】），
     之后你可以总结、答问、或基于它写新文档。
+    不在默认目录里的路径会先弹授权卡让用户点头，被拒就别再试同一条路径。
+    读多份时用 {"action":"read_doc","paths":["路径1","路径2",...]}：
+    每轮最多读 {BATCH_MAX_FILES} 份、每份只取前 {BATCH_CHARS_PER_FILE} 字，
+    超出的份数会明确报"还剩 K 份没读"，不许自己编没读到的内容。
+24a. {"action":"list_dir","path":"文件夹的完整路径"}         列一个文件夹的一层内容
+    只列名字，不读文件内容。适合"看看这个文件夹里有什么/找找哪份文件"；
+    同样走本机路径授权，列完会把条目清单放进【检索资料】。
+24b. {"action":"edit_doc","path":"文档完整路径","instruction":"怎么改"}
+    改写用户本机的 PPT / Word：程序会先给原件留副本，改写结果输出成新文件，
+    原件永远不动。instruction 写清"每页加总结/语气正式一点"这类具体要求。
+    用户没明确说要改哪个文件时，先问清楚再发这个动作，别自己猜路径。
 25. {"action":"work_log"}                                    播报你今天的工作日志
     （替用户做了哪些事），适合"你今天干了啥/汇报一下工作"
 26. {"action":"run_workflow","name":"工作流模板名"}          一键启动预设工作流
@@ -292,7 +303,12 @@ class AIWorker(QThread):
         style = config.PERSONALITIES.get(
             self.personality, config.PERSONALITIES["活泼"]
         )["chat_style"]
-        prompt = SYSTEM_PROMPT.replace("{personality}", style)
+        from framework.path_guard import describe_formats
+        from framework.file_reader import BATCH_CHARS_PER_FILE, BATCH_MAX_FILES
+        prompt = (SYSTEM_PROMPT.replace("{personality}", style)
+                  .replace("{READ_FORMATS}", describe_formats("、"))
+                  .replace("{BATCH_MAX_FILES}", str(BATCH_MAX_FILES))
+                  .replace("{BATCH_CHARS_PER_FILE}", str(BATCH_CHARS_PER_FILE)))
         if self.facts:
             # 长期记忆：用户明确让记住的事，回答时可自然运用
             prompt += ("\n\n【长期记忆】下面是用户曾告诉你的信息，"
@@ -494,6 +510,68 @@ def test_connection(api_key: str, base_url: str, model: str) -> tuple:
         return False, f"连接失败（HTTP {resp.status_code}）"
     except requests.RequestException as e:
         return False, f"网络异常：{type(e).__name__}"
+
+
+# ============================================================
+# 偏好批量抽取（每 N 轮一次；无 Key / 无网络时静默返回空串）
+# ============================================================
+PREF_EXTRACT_PROMPT = """你是偏好抽取器。下面是一段用户与桌面助手的对话。
+
+只抽「用户长期稳定的偏好」，不抽一次性任务要求。
+
+硬性要求：
+1. 只输出 JSON 数组，不要解释，不要 Markdown 代码块。
+2. 每条格式：{"key": "小写英文_下划线", "value": "中文短句", "evidence": "用户原话片段"}
+3. evidence 必须逐字摘自用户的某句话，至少 4 个字，一个字都不许改。
+4. 没有明确原话证据就不要输出；宁可少，不能猜。
+5. 「这次用深色」不算偏好，「以后都用深色」才算。
+
+已知维度可复用：doc_theme / verbosity / tone / web_search / language / reminder_style。
+其他长期偏好（工作习惯、专业背景、表达偏好等）用新的 key。"""
+
+
+def extract_preferences_llm(turns, api_key=None, base_url=None, model=None,
+                            timeout=20) -> str:
+    """同步调一次模型抽偏好，返回模型原文。
+
+    返回空串 = 没配 Key / 请求失败 / 没有内容，调用方一律当「没抽到」处理。
+    这是刻意的：偏好抽取是锦上添花，任何失败都不该打扰主对话。
+    """
+    key = (api_key or config.DEEPSEEK_API_KEY or "").strip()
+    if not key:
+        return ""
+    dialog = "\n".join(
+        ("用户：" if (t or {}).get("role") == "user" else "助手：")
+        + str((t or {}).get("content") or "")
+        for t in (turns or []) if isinstance(t, dict))
+    if not dialog.strip():
+        return ""
+    url = normalize_endpoint(base_url or config.DEEPSEEK_BASE_URL)
+    try:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"},
+            json={"model": model or config.DEEPSEEK_MODEL,
+                  "messages": [
+                      {"role": "system", "content": PREF_EXTRACT_PROMPT},
+                      {"role": "user", "content": dialog[:4000]},
+                  ],
+                  "temperature": 0,
+                  "max_tokens": 600},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            logger.debug(f"[AI] 偏好抽取 HTTP {resp.status_code}，跳过")
+            return ""
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        return choices[0].get("message", {}).get("content") or ""
+    except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+        logger.debug(f"[AI] 偏好抽取失败（已忽略）: {type(e).__name__}")
+        return ""
 
 
 # ============================================================

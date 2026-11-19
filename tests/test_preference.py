@@ -16,6 +16,7 @@ import framework.preference as pref
 from framework import config
 from framework.preference import (
     PREFERENCE_KEYS, PreferenceStore, extract_preferences,
+    parse_llm_preferences,
 )
 
 
@@ -401,6 +402,124 @@ class TestRobustness:
                 mods.add(node.module.split(".")[0])
         assert not ({"PyQt5", "requests", "pandas", "numpy"} & mods), \
             sorted(mods)
+
+
+# ============================================================
+# 七、大模型批量抽取：只收「有原话证据」的偏好
+# ============================================================
+class TestLLMBatch:
+    """这一层的风险只有一个：模型编。所以每条都必须过原话引用校验。"""
+
+    TURNS = [
+        {"role": "user", "content": "我是做财务的，以后讲东西别给我讲实现细节"},
+        {"role": "assistant", "content": "好，我记住了。"},
+        {"role": "user", "content": "以后 PPT 都用深色"},
+    ]
+
+    def test_accepts_item_with_verbatim_quote(self):
+        raw = json.dumps([{
+            "key": "background", "value": "用户是做财务的",
+            "evidence": "我是做财务的"}])
+        out = parse_llm_preferences(raw, self.TURNS)
+        assert len(out) == 1
+        assert out[0]["key"] == "background"
+        assert out[0]["confidence"] == 0.72
+
+    def test_rejects_item_without_evidence(self):
+        raw = json.dumps([{"key": "background", "value": "财务"}])
+        assert parse_llm_preferences(raw, self.TURNS) == []
+
+    def test_rejects_quote_not_in_conversation(self):
+        raw = json.dumps([{
+            "key": "hobby", "value": "喜欢户外",
+            "evidence": "我周末常去爬山"}])       # 原话里根本没有这句
+        assert parse_llm_preferences(raw, self.TURNS) == []
+
+    def test_rejects_too_short_quote(self):
+        raw = json.dumps([{
+            "key": "finance", "value": "财务", "evidence": "财务"}])
+        assert parse_llm_preferences(raw, self.TURNS) == []
+
+    def test_rejects_bad_key_and_overlong_value(self):
+        raw = json.dumps([
+            {"key": "坏Key", "value": "财务", "evidence": "我是做财务的"},
+            {"key": "ok_key", "value": "长" * 200, "evidence": "我是做财务的"},
+        ])
+        assert parse_llm_preferences(raw, self.TURNS) == []
+
+    def test_tolerates_fenced_json(self):
+        body = json.dumps([{
+            "key": "background", "value": "财务",
+            "evidence": "我是做财务的"}])
+        assert len(parse_llm_preferences("```json\n" + body + "\n```",
+                                         self.TURNS)) == 1
+
+    def test_bad_json_returns_empty(self):
+        assert parse_llm_preferences("不是 JSON", self.TURNS) == []
+        assert parse_llm_preferences(None, self.TURNS) == []
+        assert parse_llm_preferences("[]", self.TURNS) == []
+
+    def test_quote_survives_whitespace_difference(self):
+        """模型常把换行抹平，比对前双方都去空白，不该因此误杀。"""
+        turns = [{"role": "user", "content": "我是做\n财务的"}]
+        raw = json.dumps([{
+            "key": "background", "value": "财务",
+            "evidence": "我是做 财务的"}])
+        assert len(parse_llm_preferences(raw, turns)) == 1
+
+    def test_observe_batch_writes_source_llm(self, store):
+        raw = json.dumps([{
+            "key": "background", "value": "用户是做财务的",
+            "evidence": "我是做财务的"}])
+        changed = store.observe_batch(self.TURNS, lambda _t: raw)
+        assert changed and changed[0]["source"] == "llm"
+        assert store.get("background")["value"] == "用户是做财务的"
+
+    def test_observe_batch_swallows_llm_errors(self, store):
+        def boom(_turns):
+            raise RuntimeError("网络断了")
+
+        assert store.observe_batch(self.TURNS, boom) == []
+        assert store.all() == []
+
+    def test_observe_batch_empty_turns_is_noop(self, store):
+        assert store.observe_batch([], lambda _t: "[]") == []
+        assert store.observe_batch(self.TURNS, None) == []
+
+    def test_second_batch_overrides_and_keeps_supersedes(self, store):
+        first = json.dumps([{
+            "key": "background", "value": "财务",
+            "evidence": "我是做财务的"}])
+        store.observe_batch(self.TURNS, lambda _t: first)
+        turns2 = [{"role": "user", "content": "我转岗去做产品了"}]
+        second = json.dumps([{
+            "key": "background", "value": "产品",
+            "evidence": "我转岗去做产品了"}])
+        store.observe_batch(turns2, lambda _t: second)
+        item = store.get("background")
+        assert item["value"] == "产品"
+        assert item["supersedes"]["value"] == "财务"
+
+    def test_open_ended_preference_reaches_prompt_without_english_key(self,
+                                                                      store):
+        raw = json.dumps([{
+            "key": "background", "value": "用户是做财务的，别讲实现细节",
+            "evidence": "我是做财务的"}])
+        store.observe_batch(self.TURNS, lambda _t: raw)
+        prompt = store.as_prompt()
+        assert "别讲实现细节" in prompt
+        assert "background" not in prompt     # 英文 key 不该漏进系统提示词
+
+    def test_rule_layer_and_llm_layer_share_one_merge(self, store):
+        """同一维度两层都命中时，只留一条，来源以先写者为准。"""
+        store.observe("以后 PPT 都用深色")      # rule 层
+        raw = json.dumps([{
+            "key": "doc_theme", "value": "深色",
+            "evidence": "以后 PPT 都用深色"}])
+        store.observe_batch(self.TURNS, lambda _t: raw)   # llm 层同值
+        item = store.get("doc_theme")
+        assert item["hits"] >= 2
+        assert item["source"] == "rule"
 
 
 if __name__ == "__main__":

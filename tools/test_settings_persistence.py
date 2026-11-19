@@ -66,7 +66,39 @@ check("视觉配置测后恢复原值",
 check("搜索Key测后恢复原值",
       config.WEBSEARCH_API_KEY == before.get("websearch_key", ""))
 
-# 3. 本机已有 API Key 的话，启动加载后应自动切到真实 AI 模式
+# 2.6 五个能力开关（工作台「当前开关」那五个按钮）：存进去就要读得回来。
+#     在临时 APPDATA 的子进程里跑，绝不写用户真实的设置文件。
+tmp3 = tempfile.mkdtemp(prefix="pet_settings_caps_")
+try:
+    env = dict(os.environ, APPDATA=tmp3)
+    code = (
+        "import sys, json; sys.path.insert(0, r'%s')\n"
+        "import framework.utils as u\n"
+        "u.app_data_dir = lambda: r'%s'\n"
+        "from framework import config\n"
+        "config.save_user_settings(trajectory_enabled=False,\n"
+        "    preference_learning=False, evolution_enabled=False,\n"
+        "    plan_dag_enabled=False, effect_spec_strict=True)\n"
+        "config.apply_user_settings()\n"
+        "print(json.dumps({a: getattr(config, a) for a in config.CAPABILITY_KEYS}))"
+        % (PROJECT, tmp3)
+    )
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode == 0:
+        flags = json.loads(out.stdout.strip().splitlines()[-1])
+        want = {"TRAJECTORY_ENABLED": False, "PREFERENCE_LEARNING": False,
+                "EVOLUTION_ENABLED": False, "PLAN_DAG_ENABLED": False,
+                "EFFECT_SPEC_STRICT": True}
+        check("五个能力开关持久化后读回一致", flags == want, str(flags))
+    else:
+        check("五个能力开关持久化后读回一致", False,
+              out.stderr.strip().splitlines()[-1] if out.stderr else "")
+finally:
+    import shutil
+    shutil.rmtree(tmp3, ignore_errors=True)
+
+# 4. 本机已有 API Key 的话，启动加载后应自动切到真实 AI 模式
 if before.get("api_key"):
     config.apply_user_settings()
     check("启动加载 API Key", config.DEEPSEEK_API_KEY == before["api_key"])

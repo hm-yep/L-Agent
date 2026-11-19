@@ -425,8 +425,10 @@ def build_cases(env: _Env) -> list:
 
     def c20():
         cov = _journal.coverage(_parser.VALID_ACTIONS)
-        allnames = (cov["reversible"] + cov["blind"] + cov["no_effect"]
-                    + cov["undo"] + cov["unknown"])
+        # ADR 0008：restorable 是独立一类（edit_doc 的逆操作来自写前副本），
+        # 漏掉这一桶就会把新动作误判成"没归类"，评测自己先红。
+        allnames = (cov["reversible"] + cov["restorable"] + cov["blind"]
+                    + cov["no_effect"] + cov["undo"] + cov["unknown"])
         ok = (cov["unknown"] == []
               and len(allnames) == len(_parser.VALID_ACTIONS)
               and set(allnames) == set(_parser.VALID_ACTIONS))
