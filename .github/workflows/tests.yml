@@ -66,7 +66,21 @@ jobs:
         run: python -m compileall -q framework api ui tools tests
 
       - name: Contract checks (action pool / effects / persona / adaptive wiring)
-        run: python tools/check_contracts.py
+        # 失败时把每条 [FAIL] 顶成 check-run annotation。
+        # 动机：Actions 日志要登录才能下载，而 annotations 在公开仓库可匿名读取，
+        # 定位「哪条契约红了、真实值是多少」不必先拿到 token。
+        shell: bash
+        run: |
+          set +e
+          python tools/check_contracts.py > contracts.log 2>&1
+          code=$?
+          cat contracts.log
+          if [ "$code" -ne 0 ]; then
+            grep -F "[FAIL]" contracts.log | head -20 | while IFS= read -r line; do
+              echo "::error title=契约检查::${line}"
+            done
+          fi
+          exit "$code"
 
       - name: Unit tests
         run: python -m pytest -q --cov=framework --cov-report=term-missing:skip-covered
