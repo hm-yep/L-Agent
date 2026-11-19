@@ -25,7 +25,15 @@ eval_result.json
 .workbuddy/
 
 # 本机截图与临时渲染产物（含本机路径，不对外）
-/output/
+# 例外：契约检查要求仓库里存在「网页台可内嵌」的真窗口截图，
+# 干净 clone 也要能跑过 tools/check_contracts.py，故单独放行这一个文件。
+# 注意 git 规则：父目录不能被整体排除，否则子文件的 ! 放行不生效，
+# 因此下面写成逐层 /output/* 而不是 /output/。
+# 该截图入库前已裁掉底部状态栏（原图暴露了 API key 的掩码片段）。
+/output/*
+!/output/grant_ui/
+/output/grant_ui/*
+!/output/grant_ui/workspace_web_after_fix_screen.png
 
 # 个人求职笔记（含自我评价与面试策略，不进公开仓库）
 docs/INTERVIEW_GUIDE.md
