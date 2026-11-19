@@ -11,6 +11,8 @@ jobs:
     # 依赖 winreg / ctypes.wintypes / PyQt5 桌面栈，收集阶段需 Windows runner
     name: tests + contracts + evaluation (windows-latest)
     runs-on: windows-latest
+    # 整个 job 的硬上限。默认是 6 小时，出问题时等于白烧额度、也看不到反馈。
+    timeout-minutes: 45
     env:
       QT_QPA_PLATFORM: offscreen   # 无桌面会话下让 Qt 以离屏模式加载
       PYTHONIOENCODING: utf-8      # 规避 GBK 控制台在打印中文/emoji 断言行时崩溃
@@ -39,9 +41,26 @@ jobs:
       - name: Install dependencies (real install, no hand-picked list)
         # 刻意走完整的 requirements 链：以前 CI 手工列包、绕开 requirements.txt，
         # 导致 PyTorch 这种错误包名永远发现不了。这里让 CI 与用户安装路径一致。
+        #
+        # 分段 + 计时 + 硬超时：首次运行在 Windows runner 上出现过「pip 无任何输出地
+        # 挂住 25 分钟以上」，默认 job 超时 6 小时会白等。这里给 18 分钟（正常 5-15
+        # 分钟足够，覆盖 PyQt5 + WebEngine 约 110MB 的冷启动），超时即红并留下分段计时，
+        # 能直接看出卡在 api 依赖还是桌面依赖。
+        timeout-minutes: 18
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
+          t0=$(date +%s)
+          echo "===== [1/2] requirements-api.txt ====="
+          python -m pip install -r requirements-api.txt
+          echo "[1/2] ok in $(( $(date +%s) - t0 ))s"
+
+          t1=$(date +%s)
+          echo "===== [2/2] requirements-dev.txt (含桌面 UI / 文档工厂 / 数据分析) ====="
           python -m pip install -r requirements-dev.txt
+          echo "[2/2] ok in $(( $(date +%s) - t1 ))s"
+
+          echo "===== 关键包版本（失败时对照本地环境）====="
+          python -m pip list 2>/dev/null | grep -Ei "pyqt|pandas|matplotlib|pytest|fastapi|pillow|pyinstaller" || true
 
       - name: Syntax check
         run: python -m compileall -q framework api ui tools tests
