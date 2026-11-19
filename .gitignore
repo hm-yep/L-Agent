@@ -24,6 +24,10 @@ eval_result.json
 # WorkBuddy 会话数据（本地工作记录，不属于产品代码）
 .workbuddy/
 
+# LoRA 微调产物：适配器权重是几十上百 MB 的二进制，不进仓库。
+# 训练数据（finetune/data/）仍然入库，方便复现训练。
+/finetune/output/
+
 # 本机截图与临时渲染产物（含本机路径，不对外）
 # 例外：契约检查要求仓库里存在「网页台可内嵌」的真窗口截图，
 # 干净 clone 也要能跑过 tools/check_contracts.py，故单独放行这一个文件。

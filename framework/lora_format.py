@@ -1,0 +1,73 @@
+# -*- coding: utf-8 -*-
+"""LoRA 提示词格式的单一真源：训练与推理必须用同一份模板。
+
+为什么值得单独一个模块：微调最怕「训的是 A、跑的是 B」。训练脚本
+（finetune/train_lora.py）与产品推理（framework/lora_engine.py）原来
+各写一遍模板，只要有一处改了格式（多一个空格、少一段标题），微调就白做了
+——而且不会报错，只会让效果莫名其妙地差。
+
+本模块只依赖标准库：训练脚本 import 它、产品侧也 import 它，两边跑在同一个
+仓库里，格式只有这一份。**不要往这里加第三方依赖**（训练脚本在没有 torch
+的机器上也要能 import）。
+
+格式（与历史训练脚本逐字一致；改这里等于让所有历史权重失配）：
+
+    训练文本：
+        ### 指令：{instruction}
+        ### 输入：{input}
+        ### 回答：{output}
+
+    推理提示（同一模板，末尾留白让模型续写）：
+        ### 指令：{instruction}
+        ### 输入：{input}
+        ### 回答：
+"""
+
+TRAIN_TEMPLATE = "### 指令：{instruction}\n### 输入：{input}\n### 回答：{output}"
+PROMPT_TEMPLATE = "### 指令：{instruction}\n### 输入：{input}\n### 回答："
+
+# 指令前缀：训练集 31 条里 30 条是「用户说：」，1 条是「用户问：」
+SAY_PREFIX = "用户说："
+ASK_PREFIX = "用户问："
+
+# 判定「像不像提问」用的开头词（训练集那条问句是「用户问：你是谁？介绍一下自己。」）
+_ASK_STARTERS = ("谁", "什么", "怎么", "为什么", "为啥", "哪", "如何", "多少",
+                 "是不是", "能不能", "可不可以", "有没有", "介绍", "能否")
+
+
+def build_training_text(instruction: str, input_text: str = "",
+                        output: str = "") -> str:
+    """训练样本文本：训练脚本拼样本时只应走这里。"""
+    return TRAIN_TEMPLATE.format(instruction=instruction or "",
+                                 input=input_text or "",
+                                 output=output or "")
+
+
+def build_prompt(instruction: str, input_text: str = "") -> str:
+    """推理提示：与训练文本同一模板，去掉回答段。"""
+    return PROMPT_TEMPLATE.format(instruction=instruction or "",
+                                  input=input_text or "")
+
+
+def looks_like_question(text: str) -> bool:
+    """一句话是不是「提问」——决定指令前缀用「用户问：」还是「用户说：」。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t.endswith(("?", "？")):
+        return True
+    return t.startswith(_ASK_STARTERS)
+
+
+def instruction_for(user_text: str, input_text: str = "") -> str:
+    """把用户这句话变成训练集同款的指令。"""
+    t = (user_text or "").strip()
+    if not t:
+        return ""
+    prefix = ASK_PREFIX if looks_like_question(t) else SAY_PREFIX
+    return prefix + t
+
+
+def build_user_prompt(user_text: str, input_text: str = "") -> str:
+    """产品推理入口：从一句用户输入直接得到可送进模型的提示。"""
+    return build_prompt(instruction_for(user_text, input_text), input_text)

@@ -1,5 +1,7 @@
-# 可选：LoRA 微调实验（finetune/ 下的独立训练脚本，未接入产品推理链路）
+# 可选：LoRA 微调（训练 + 本地推理；训出的权重接进主链路当第一个 provider）
 #   pip install -r requirements-finetune.txt
+# 训练：python finetune/train_lora.py      （产物在 finetune/output，不入库）
+# 用起来：设置界面「本地微调模型（LoRA，选填）」里开开关 + 填适配器路径
 # 注意：正确包名是 torch（旧版 requirements.txt 曾误写成 PyTorch，
 # 那是 PyPI 上的占位包，会导致 pip 无法解析）。无 GPU 时训练不现实。
 torch>=2.0,<3.0

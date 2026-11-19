@@ -22,7 +22,7 @@
 | 多智能体 Planner→Executor→Reviewer | 仅 API | `framework/multi_agent.py` 只在 `/agent/run` 端点调用；`framework/core.py` 零引用 |
 | RAG（LangChain + Chroma + BGE） | 仅 API | API 侧 `use_rag` 默认 False；桌面主链路不经过 |
 | Whisper 语音 | 仅网页调试台 | `/voice`、`/voice/chat` 两个端点 |
-| LoRA 微调 | 独立训练脚本 | `finetune/` 下 31 条样本的训练脚本，未接入产品推理链路 |
+| LoRA 微调 | 桌面主链路（可选 provider） | `framework/lora_engine.py` 是主链路的**第一个 provider**：开关打开后先问本地基座+适配器，答得不合动作协议就退给云端；只吃当前这一句用户输入；缺依赖 / 缺权重时如实降级，不假装答了 |
 
 32 个动作按用途分 8 类（口径以 `VALID_ACTIONS` 为准，[产品功能介绍](产品功能介绍.md) 与本文一致）：桌面交互与动画、系统控制与电源、文档工厂、屏幕视觉、联网检索与本机阅读、数据分析、任务台 / 规划 / 记忆、撤销与技能。
 
@@ -69,7 +69,8 @@ python main.py
 
 - 32 个动作里的工具意图（提醒、待办、文档、电源等）由离线规则引擎响应；
 - 撤销（`undo_last`）与技能重放（`run_skill`）是纯本地代码路径，零模型调用，照样能用；
-- 闲聊给兜底回复。
+- 闲聊给兜底回复；
+- 想要「不配 Key 也能自然对话」：装上本地微调模型（见下文「本地微调模型（LoRA）」），它接进主链路当第一个 provider。
 
 ### 配 Key 后能看到什么
 
@@ -86,6 +87,31 @@ python main.py
 ```
 
 启用真实模型后：自然语言对话、Plan-and-Execute 规划、GLM-4.6V 屏幕视觉、联网检索、文档工厂生成带真实内容的成果。
+
+### 本地微调模型（LoRA）：不配 Key 也能真对话
+
+云端 Key 之外，主链路还有第二个 provider：**本地微调模型**（基座 + PEFT 适配器）。在设置界面「本地微调模型（LoRA，选填）」里打开开关、填好基座与适配器路径即可，配置会写进本机 `user_settings.json`，下次启动读回同样的值。
+
+```bash
+# 1) 装可选依赖（训练与推理都在这组里）
+pip install -r requirements-finetune.txt
+
+# 2) 训练出适配器（31 条样本，产物在 finetune/output，不入库）
+python finetune/train_lora.py
+
+# 3) 设置界面填「适配器：finetune/output」，点「测试加载」
+```
+
+路由顺序（`framework/ai_engine.py` 的 `_request_model`）：**本地微调 → 云端模型 → 离线规则兜底**。边界写在明处，不夸大：
+
+- 本地通路只吃**当前这一句用户输入**（长期记忆 / 检索资料 / 人设提示词不进本地模型），覆盖的是「一句话 → 动作序列」这类短指令；
+- 本地答得不合动作协议（吐了残缺 JSON、动作不在 32 个动作池里）就**退给云端**，云端没配 Key 再退到离线规则——不会拿半截 JSON 显示给用户；
+- 缺依赖、缺权重、加载失败都如实降级并说明原因，不假装「本地模型答了」；
+- 训练与推理用**同一份提示词模板**（`framework/lora_format.py`），避免「训的是 A、跑的是 B」这种白训。
+
+网页调试台（API 侧）走的是它自己那条链路（`api/server.py` 直接调云端模型），**不经过本地微调**——本地微调只服务桌面主链路。
+
+详见 [ADR 0010](docs/adr/0010-lora-as-main-chain-provider.md)。
 
 单独启动 API 服务与网页调试台：
 
@@ -137,9 +163,9 @@ uvicorn api.server:app --host 127.0.0.1 --port 8000
 
 1. **撤销用世界快照求差集，而不是逐动作写 undo**：每轮开工拍一次可观测世界（音量 / 待办 / 提醒 / 交付 / 长期记忆），收口求差集，只按差集下逆操作，撤完再求一次差集自证。判据只有一份，动作实现改了什么这里就看见什么，不会漂移。详见 [ADR 0001](docs/adr/0001-undo-by-world-diff.md)。
 2. **技能层只收确定性动作，重放零模型调用**：只把「参数完全由用户的话决定」的 10 个动作收进技能，拒收 `create_doc`，缺任一槽位整条拒跑。这样重放不依赖模型、不依赖网络，API 欠费时也能用。详见 [ADR 0002](docs/adr/0002-skill-replay-zero-llm.md)。
-3. **主链路单一真源，旁路能力显式标边界**：桌面对话链路只认 `framework/core.py`；多智能体、RAG、Whisper、LoRA 各有独立入口，不塞进主链路，也不写成「桌面版已具备」。这么做是为了让「某个能力能不能在桌面上用」有唯一答案，而不是靠形容词描述。
+3. **主链路单一真源，旁路能力显式标边界**：桌面对话链路只认 `framework/core.py`；多智能体、RAG、Whisper 各有独立入口，不塞进主链路，也不写成「桌面版已具备」；LoRA 则相反——它是主链路里的一个 **provider**（`framework/ai_engine.py` 的路由顺序：本地微调 → 云端模型 → 离线规则兜底），写清楚它的边界（只吃当前一句用户输入、答不好就退云端）。这么做是为了让「某个能力能不能在桌面上用」有唯一答案，而不是靠形容词描述。
 
-完整架构图见 [docs/架构说明.md](docs/架构说明.md)，手动验收脚本见 [docs/QUICK_START.md](docs/QUICK_START.md)；本版新增的设计决策见 [ADR 0003 偏好与自我进化](docs/adr/0003-preference-and-evolution.md)、[ADR 0004 可验证执行](docs/adr/0004-verifiable-execution.md) 、[ADR 0005 能力开关运行期可翻且必须落盘](docs/adr/0005-runtime-capability-switches.md)、[ADR 0006 会话内路径授权与统一文件读取层](docs/adr/0006-session-path-grants.md)、[ADR 0007 跨端共用授权通道](docs/adr/0007-cross-end-shared-grant-channel.md)与 [ADR 0008 写动作的可还原性分类](docs/adr/0008-restorable-write-actions.md)、[ADR 0009 进程级 Qt 属性必须在 QApplication 之前设](docs/adr/0009-qt-attribute-before-qapplication.md)。
+完整架构图见 [docs/架构说明.md](docs/架构说明.md)，手动验收脚本见 [docs/QUICK_START.md](docs/QUICK_START.md)；本版新增的设计决策见 [ADR 0003 偏好与自我进化](docs/adr/0003-preference-and-evolution.md)、[ADR 0004 可验证执行](docs/adr/0004-verifiable-execution.md) 、[ADR 0005 能力开关运行期可翻且必须落盘](docs/adr/0005-runtime-capability-switches.md)、[ADR 0006 会话内路径授权与统一文件读取层](docs/adr/0006-session-path-grants.md)、[ADR 0007 跨端共用授权通道](docs/adr/0007-cross-end-shared-grant-channel.md)与 [ADR 0008 写动作的可还原性分类](docs/adr/0008-restorable-write-actions.md)、[ADR 0009 进程级 Qt 属性必须在 QApplication 之前设](docs/adr/0009-qt-attribute-before-qapplication.md)、[ADR 0010 本地微调模型作为主链路的 provider](docs/adr/0010-lora-as-main-chain-provider.md)。
 
 ## 深度：从工具编排到可验证执行
 
@@ -199,6 +225,8 @@ framework/   Agent 主链路：动作解析、计划执行、质量门、效果�
              effect_spec.py      32 个动作副作用契约与对合证明
              plan_graph.py       计划 DAG 编译与增量重算
              prompt_blocks.py    共享提示词块（人设等）
+             lora_engine.py      本地微调运行时（主链路的第一个 provider）
+             lora_format.py      LoRA 提示词格式单一真源（训练与推理共用）
 api/         FastAPI 服务层 + 网页调试台（api/static/index.html）
              /agent/run 接 framework/multi_agent.py；/voice、/voice/chat 接 Whisper
 ui/          PyQt5 桌面窗口、立绘与音效管理、计划卡片
@@ -208,11 +236,13 @@ assets/      立绘帧动画、音效、图标
 tests/       pytest 单元测试
 tools/       集成自检、契约检查、能力评测集、扰动评测与立绘处理工具
              test_agent_features.py  157 项集成自检
-             check_contracts.py      CI 契约检查（103 项）
+             check_contracts.py      CI 契约检查（111 项）
              eval_tasks.py          端到端能力评测集（38 条）
              benchmark.py           带扰动的学习前后对照评测
              trace_view.py          事件流渲染成单文件时间线 HTML
-finetune/    LoRA 独立训练脚本（31 条样本），未接入产品推理链路
+             verify_lora_runtime.py  真机验证本地微调通路（造极小随机基座 + 真 PEFT 适配器）
+finetune/    LoRA 训练脚本（31 条样本）；训练与产品推理共用
+             framework/lora_format.py 的提示词格式
 docs/        架构图、ADR、角色素材预览、上手手册与历史归档
 data/        运行时产物（记忆、任务台、向量库、日志、事件流 / 偏好 / 规则），已在 .gitignore 排除
 ```
@@ -223,12 +253,13 @@ data/        运行时产物（记忆、任务台、向量库、日志、事件�
 
 | 口径 | 命令 | 实测结果（2026-11-18） | 说明 |
 |---|---|---|---|
-| pytest 单测 | `pytest -q` | 552 passed / 1 skipped | 收集 `tests/` 下的单元测试（含 API 安全、路径白名单、契约、状态复位、端到端接线 8 项、统一字体系统 4 项、UI 控件接线回归、关于页七个能力开关 7 项、跨端授权真实链路 11 项、工作台「网页调试台」页入场券 8 项） |
-| 契约检查 | `python tools/check_contracts.py` | 103/103 通过 | 校验动作契约、三套人设、依赖清单、API 安全护栏、L1/L2 接线、统一字体系统、三份文档数字一致性、UI 控件接线与开关落盘链路，以及本机文件读取三态判定、授权卡三按钮、跨端锚点鉴权、超时按拒、一条请求一张卡且队列按 gid 归还、授权收尾槽不许 abort 进程、撤销真清空、格式文案单一出处、批量读取预算、可还原写动作、评测分类覆盖与线框图标、WebEngine 属性设在 QApplication 之前、降级文案按原因分开；文档里的 pytest 条数与契约条数都由脚本对着真实运行结果核，写错就红 |
+| pytest 单测 | `pytest -q` | 577 passed / 1 skipped | 收集 `tests/` 下的单元测试（含 API 安全、路径白名单、契约、状态复位、端到端接线 8 项、统一字体系统 4 项、UI 控件接线回归、关于页七个能力开关 7 项、跨端授权真实链路 11 项、工作台「网页调试台」页入场券 8 项、本地微调接入 25 项） |
+| 契约检查 | `python tools/check_contracts.py` | 111/111 通过 | 校验动作契约、三套人设、依赖清单、API 安全护栏、L1/L2 接线、统一字体系统、三份文档数字一致性、UI 控件接线与开关落盘链路，本地微调（格式单一真源、主链路 provider 接线、不合协议退云端、重依赖不进主链路、开关与路径落盘、设置界面真控件、真机验证脚本在），以及本机文件读取三态判定、授权卡三按钮、跨端锚点鉴权、超时按拒、一条请求一张卡且队列按 gid 归还、授权收尾槽不许 abort 进程、撤销真清空、格式文案单一出处、批量读取预算、可还原写动作、评测分类覆盖与线框图标、WebEngine 属性设在 QApplication 之前、降级文案按原因分开；文档里的 pytest 条数与契约条数都由脚本对着真实运行结果核，写错就红 |
 | tools 集成自检 | `python tools/test_agent_features.py` | 157 通过 / 0 失败 | 需单独运行的集成自检，证明技能/撤销零模型调用 |
 | 能力评测集 | `python tools/eval_tasks.py` | 38/38 通过 | 离线确定性任务的端到端通过率 + 失败原因分类 |
 | 启动冒烟 | `python main.py --selftest` | 36/36 通过 | 离屏环境跳过 2 项依赖真实屏幕几何的布局断言；含「QApplication 之后仍能起 WebEngine」这一项，专门盯「网页调试台」页内嵌的初始化时机；CI 自动运行 |
 | 扰动评测 | `python tools/benchmark.py` | 学习前 56.25% → 学习后 81.25%（+25.00 pp） | 本版新增：32 条任务 / 10 类扰动、固定种子、离线确定性；8 条任务被救回，仍保留 6 条硬失败 |
+| 真机验证（本地微调） | `python tools/verify_lora_runtime.py` | 链路通 | 不联网、不下大模型：现场造一个极小的随机基座 + 真 PEFT 适配器，走完「加载 → 续写 → 主链路协议校验」；需要 `requirements-finetune.txt` |
 
 契约检查与扰动评测是本版补齐的两项机器校验口径：前者管跨文件一致性，后者管「进化是否真的有用」。扰动评测是离线确定性链路的能力抽样，不等同于联网或真实大模型表现；与 pytest 单测互补。
 

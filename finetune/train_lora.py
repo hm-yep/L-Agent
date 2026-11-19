@@ -3,11 +3,27 @@
 
     pip install peft transformers datasets accelerate pyyaml
     python finetune/train_lora.py
+
+两件事要跟产品侧对齐（都写在这一处的注释里，别只改一边）：
+  * 样本文本走 framework/lora_format.py——那是提示词格式的单一真源，
+    产品推理（framework/lora_engine.py）用的是同一份模板。微调最怕
+    「训的是 A、跑的是 B」，两处各写一遍格式迟早会漂。
+  * 只有**回答部分**参与 loss（提示部分掩成 -100）。历史脚本把整段
+    都算进 loss，等于让模型连提示一起背，推理时却只喂提示——
+    训练目标与推理用法对不上。
 """
 
 import json
 import sys
 from pathlib import Path
+
+# 让脚本能从仓库根目录 import framework.lora_format（直接跑本文件时
+# sys.path[0] 是 finetune/，拿不到仓库根）
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from framework import lora_format    # noqa: E402  提示词格式单一真源
 
 try:
     import yaml
@@ -31,17 +47,37 @@ def load_config(path: str = "finetune/config.yaml") -> dict:
 
 
 def build_dataset(path: str, tokenizer, max_length: int) -> Dataset:
+    """拼训练样本：提示部分不算 loss，只有回答部分参与训练。
+
+    提示文本走 framework/lora_format.py（与产品推理同一份模板）；
+    labels 里提示段与补齐段一律掩成 -100，模型只学「怎么答」。
+    """
     records = []
+    pad_id = tokenizer.pad_token_id
     with open(path, encoding="utf-8") as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             item = json.loads(line)
-            text = (f"### 指令：{item['instruction']}\n"
-                    f"### 输入：{item.get('input', '')}\n"
-                    f"### 回答：{item['output']}")
-            enc = tokenizer(text, truncation=True, max_length=max_length,
-                            padding="max_length")
-            enc["labels"] = enc["input_ids"].copy()
-            records.append(enc)
+            prompt = lora_format.build_prompt(item["instruction"],
+                                              item.get("input", ""))
+            answer = item["output"]
+            prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            answer_ids = tokenizer(answer, add_special_tokens=False)["input_ids"]
+            if tokenizer.eos_token_id is not None:
+                answer_ids = answer_ids + [tokenizer.eos_token_id]
+            ids = prompt_ids + answer_ids
+            labels = [-100] * len(prompt_ids) + answer_ids
+            real_len = min(len(ids), max_length)
+            ids = ids[:real_len]
+            labels = labels[:real_len]
+            attention = [1] * real_len + [0] * (max_length - real_len)
+            ids = ids + [pad_id] * (max_length - real_len)
+            labels = labels + [-100] * (max_length - real_len)
+            records.append({"input_ids": ids,
+                            "attention_mask": attention,
+                            "labels": labels})
     return Dataset.from_list(records)
 
 

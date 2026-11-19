@@ -408,6 +408,21 @@ MAX_PREFERENCES = 40
 MAX_RULES = 24
 
 # ============================================================
+# 本地微调模型（LoRA）：主链路的第一个 provider
+# 开启后：本地基座 + 适配器先答，答得不合动作协议就退给云端模型；
+# 云端也没配 Key 时退到离线规则。缺依赖/缺权重时如实降级，不假装答了。
+# 依赖在 requirements-finetune.txt（torch / transformers / peft），
+# 默认关闭：不影响没装这些包的机器。
+# ============================================================
+LORA_ENABLED = False             # 总开关（设置界面可改并落盘）
+LORA_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"   # 基座模型（HF 名或本地目录）
+LORA_ADAPTER_PATH = "finetune/output"            # PEFT 适配器权重目录
+LORA_DEVICE = "auto"             # auto / cpu / cuda
+LORA_MAX_NEW_TOKENS = 256        # 单次续写上限
+LORA_TEMPERATURE = 0.0           # 0 = 贪心解码（小模型吐 JSON 更稳）
+LORA_INFERENCE_TIMEOUT = 120     # 单次推理耗时预算（秒，超了只记日志）
+
+# ============================================================
 # 用户设置持久化（%APPDATA%\DesktopPet\user_settings.json）
 # 设置界面填写的 API Key / 接口地址 / 模型 / 性格 / 音效 都会存到这里。
 # 固定放用户目录（不放 exe 旁边）：exe 被挪到别的文件夹、直接在压缩包里
@@ -495,6 +510,7 @@ def apply_user_settings() -> dict:
     global SOUND_ENABLED, SOUND_VOLUME, ALLOW_DOC_GENERATION, PEXELS_API_KEY
     global VISION_API_KEY, VISION_MODEL, VISION_API_URL
     global WEBSEARCH_API_KEY, WEBSEARCH_API_URL
+    global LORA_ENABLED, LORA_BASE_MODEL, LORA_ADAPTER_PATH, LORA_DEVICE
 
     DEEPSEEK_API_KEY = data.get("api_key", DEEPSEEK_API_KEY)
     DEEPSEEK_BASE_URL = data.get("base_url", DEEPSEEK_BASE_URL)
@@ -514,6 +530,14 @@ def apply_user_settings() -> dict:
     WEBSEARCH_API_KEY = str(data.get("websearch_key") or WEBSEARCH_KEY_DEFAULT)
     WEBSEARCH_API_URL = str(data.get("websearch_url") or "").strip() \
         or WEBSEARCH_URL_DEFAULT
+
+    # 本地微调模型：开关 + 基座 + 适配器路径 + 设备
+    LORA_ENABLED = bool(data.get("lora_enabled", LORA_ENABLED))
+    LORA_BASE_MODEL = str(data.get("lora_base_model") or "").strip() \
+        or LORA_BASE_MODEL
+    LORA_ADAPTER_PATH = str(data.get("lora_adapter_path") or "").strip() \
+        or LORA_ADAPTER_PATH
+    LORA_DEVICE = str(data.get("lora_device") or "").strip() or LORA_DEVICE
 
     # 有 Key 就自动启用真实 AI（无需手改代码）
     use_real = data.get("use_real_ai", bool(DEEPSEEK_API_KEY))

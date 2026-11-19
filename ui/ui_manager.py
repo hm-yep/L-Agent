@@ -320,6 +320,8 @@ class SettingsDialog(QWidget):
     volume_changed = pyqtSignal(float)
     ai_config_changed = pyqtSignal(str, str, str)   # api_key, base_url, model
     test_ai_requested = pyqtSignal(str, str, str)   # 测试连接
+    lora_config_changed = pyqtSignal(bool, str, str, str)  # 开关,基座,适配器,设备
+    test_lora_requested = pyqtSignal(str, str, str)        # 测试本地微调加载
     exit_requested = pyqtSignal()
 
     MIN_WIDTH = 360              # 窗口最小宽度
@@ -430,6 +432,66 @@ class SettingsDialog(QWidget):
         sep.setFrameShape(QFrame.HLine)
         sep.setFixedHeight(1)
         layout.addWidget(sep)
+
+        # ================= 本地微调模型（LoRA）=================
+        # 主链路的第一个 provider：开启后先问本地模型，答得不合协议才退云端。
+        lora_icon = icon_label("robot", theme.T("ACCENT"), 17)
+        lora_title = QLabel("本地微调模型（LoRA，选填）")
+        lora_title.setObjectName("settingsTitle")
+        lora_head = QHBoxLayout()
+        lora_head.setSpacing(theme.SP["s"])
+        lora_head.addWidget(lora_icon)
+        lora_head.addWidget(lora_title, 1)
+        layout.addLayout(lora_head)
+
+        self._lora_enabled = QCheckBox("使用本地微调模型（没配 Key 也能真对话）")
+        self._lora_enabled.setChecked(config.LORA_ENABLED)
+        self._lora_enabled.setToolTip(
+            "开启后对话先问本地微调模型；答得不合动作协议会退给云端模型")
+        layout.addWidget(self._lora_enabled)
+
+        base_row = QHBoxLayout()
+        base_row.addWidget(QLabel("基座模型:"))
+        self._lora_base = QLineEdit()
+        self._lora_base.setPlaceholderText("Qwen/Qwen2.5-1.5B-Instruct")
+        self._lora_base.setText(config.LORA_BASE_MODEL)
+        base_row.addWidget(self._lora_base)
+        layout.addLayout(base_row)
+
+        adapter_row = QHBoxLayout()
+        adapter_row.addWidget(QLabel("适配器:"))
+        self._lora_adapter = QLineEdit()
+        self._lora_adapter.setPlaceholderText("finetune/output")
+        self._lora_adapter.setText(config.LORA_ADAPTER_PATH)
+        adapter_row.addWidget(self._lora_adapter)
+        layout.addLayout(adapter_row)
+
+        device_row = QHBoxLayout()
+        device_row.addWidget(QLabel("设备:"))
+        self._lora_device = QComboBox()
+        self._lora_device.addItems(["auto", "cpu", "cuda"])
+        self._lora_device.setCurrentText(config.LORA_DEVICE)
+        device_row.addWidget(self._lora_device)
+        layout.addLayout(device_row)
+
+        lora_test_row = QHBoxLayout()
+        self._lora_test_btn = QPushButton("测试加载")
+        self._lora_test_btn.setObjectName("settingsButton")
+        self._lora_test_btn.setToolTip("真的加载一次基座与适配器，看能不能用")
+        self._lora_test_btn.clicked.connect(self._on_test_lora)
+        self._lora_status = QLabel("已启用 · 未验证" if config.LORA_ENABLED
+                                   else "未启用（对话走云端模型）")
+        self._lora_status.setObjectName("aiStatus")
+        self._lora_status.setWordWrap(True)
+        lora_test_row.addWidget(self._lora_test_btn)
+        lora_test_row.addWidget(self._lora_status)
+        layout.addLayout(lora_test_row)
+
+        sep2 = QFrame()
+        sep2.setObjectName("hline")
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setFixedHeight(1)
+        layout.addWidget(sep2)
 
         # 性格切换
         row1 = QHBoxLayout()
@@ -647,6 +709,20 @@ class SettingsDialog(QWidget):
         self._ai_status.setText("测试中...")
         self.test_ai_requested.emit(key, url, model)
 
+    def _on_test_lora(self):
+        """测试本地微调模型能不能加载（结果由外部线程回调设置）"""
+        self._lora_status.setText("加载中（可能要几十秒）...")
+        self.test_lora_requested.emit(
+            self._lora_base.text().strip() or config.LORA_BASE_MODEL,
+            self._lora_adapter.text().strip() or config.LORA_ADAPTER_PATH,
+            self._lora_device.currentText().strip() or config.LORA_DEVICE)
+
+    def set_lora_status(self, text: str):
+        """外部更新本地微调状态文案"""
+        self._lora_status.setText(text)
+        self._panel.layout().activate()
+        self._fit_to_content()
+
     def set_ai_status(self, text: str):
         """外部更新连接状态文案（文案变长会让窗口长高，不会顶掉底部按钮）"""
         self._ai_status.setText(text)
@@ -656,6 +732,10 @@ class SettingsDialog(QWidget):
     def refresh_status(self, status_text: str):
         """打开设置时同步当前 AI 状态"""
         self._ai_status.setText(status_text)
+
+    def refresh_lora_status(self, status_text: str):
+        """打开设置时同步当前本地微调状态（只改文字，不动窗口尺寸）"""
+        self._lora_status.setText(status_text)
 
     def _save(self):
         """保存设置（含 AI 配置）"""
@@ -672,6 +752,11 @@ class SettingsDialog(QWidget):
         self.sound_changed.emit(self._sound.isChecked())
         self.volume_changed.emit(self._volume.value() / 100.0)
         self.ai_config_changed.emit(*self._current_ai_config())
+        self.lora_config_changed.emit(
+            self._lora_enabled.isChecked(),
+            self._lora_base.text().strip(),
+            self._lora_adapter.text().strip(),
+            self._lora_device.currentText().strip())
         # 原来保存后窗口立刻消失，用户分不清是「保存成功」还是「取消/崩了」。
         # 先在按钮上给一句可见结果，再延时关闭，下次打开时按钮已复位。
         self._save_btn.setText("已保存 ✓")

@@ -2,6 +2,68 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-19] · LoRA 微调接进主链路：本地模型成了第一个 provider
+
+> 用户一句话：「你把它这个 LoRA 未接入的问题解决一下。」查下来 README 的能力对照表里那行
+> 「LoRA 微调 | 独立训练脚本 | 未接入产品推理链路」是实话：`finetune/` 训得出权重，
+> 但产品侧没有任何一条代码路径能用上它。
+
+### 新增
+
+- **`framework/lora_format.py`**：LoRA 提示词格式的**单一真源**。训练脚本
+  （`finetune/train_lora.py`）、命令行推理（`finetune/inference.py`）、产品推理
+  （`framework/lora_engine.py`）全部从这一个模块取模板，模板字面量只允许出现在这一个文件里。
+  微调最常见的失败是「训的是 A、跑的是 B」，两处各写一遍格式迟早漂，而且不会报错。
+- **`framework/lora_engine.py`**：本地运行时（基座 + PEFT 适配器）。懒加载、线程安全、
+  可用性如实报告（缺依赖 / 缺适配器 / 就绪三档），适配器判据是目录里有 `adapter_config.json`。
+- **`framework/ai_engine.py` 的 provider 路由**：`_request_model()` 的顺序是
+  **本地微调 → 云端模型 → 离线规则兜底**。本地返回的仍是同一套动作列表，
+  下游（动作解析 / 计划确认 / 撤销账本 / 质量门）一行都没改。
+- **设置界面「本地微调模型（LoRA，选填）」分组**：开关、基座模型、适配器路径、设备四栏，
+  外加「测试加载」按钮（真加载一次，把结果说清楚）；配置写进本机 `user_settings.json`。
+- **`docs/adr/0010-lora-as-main-chain-provider.md`**：为什么接在 `ai_engine` 而不是
+  `core`，以及能力边界写在明处的三条。
+- **`tools/verify_lora_runtime.py`**（手动运行的真机验证脚本）：不联网、不下大模型——
+  现场造一个**极小的随机基座** + **真 PEFT 适配器**（产出真实 `adapter_config.json`），
+  走完「加载 → 真续写 → 主链路协议校验」。本机实测：适配器能加载、GPU 上真续写、
+  主链路认它的输出（随机权重吐的是乱码，被判成人话包成 `show_bubble`）。
+
+### 变更
+
+- **`framework/config.py`**：新增 `LORA_ENABLED` / `LORA_BASE_MODEL` / `LORA_ADAPTER_PATH` /
+  `LORA_DEVICE` / `LORA_MAX_NEW_TOKENS` / `LORA_TEMPERATURE` / `LORA_INFERENCE_TIMEOUT`，
+  默认**关闭**（产品行为不该默认变），落盘键 `lora_enabled` 等四个。
+- **`framework/core.py`**：`set_lora_config()`（改配置 + 落盘 + 关开关时释放权重）与
+  `lora_status_text()`。
+- **`finetune/train_lora.py`**：样本文本改走共享模板；**修掉一个真缺陷**——原来
+  `enc["labels"] = enc["input_ids"].copy()` 让提示部分也参与 loss，等于让模型连提示一起背，
+  而推理时只喂提示；现在提示段掩成 `-100`，只有回答部分参与训练。
+- **`finetune/inference.py`**：同样走共享模板；修掉「decode 时把提示也带出来」的旧毛病
+  （只 decode 新生成的那段）。
+- **`.gitignore`**：新增 `/finetune/output/`——适配器权重是几十上百 MB 的二进制，不进仓库；
+  训练数据仍入库以便复现。
+
+### 边界（如实，不夸大）
+
+- 本地通路**只吃当前这一句用户输入**：长期记忆 / 检索资料 / 人设提示词不进本地模型。
+- 吐了**残缺 JSON** 或动作不在 32 个动作池里 → **退给云端**，云端没配 Key 再退离线规则；
+  确实是段人话就当回答收下。不会把半截 JSON 显示给用户。
+- 缺依赖 / 缺权重 / 加载失败一律如实降级并说明原因，**不假装「本地模型答了」**。
+- `torch / transformers / peft` 只在 `requirements-finetune.txt` 里，主链路顶层不 import 它们；
+  没装这些包的机器完全不受影响。
+
+### 验证
+
+- `pytest -q`：**577 passed / 1 skipped**（较上一版 552 增 25 项，新增
+  `tests/test_lora_engine.py`）；`tools/check_contracts.py`：**111/111**（新增 8 条：
+  格式单一真源、主链路 provider 接线、不合协议退云端、重依赖不进主链路、
+  开关与路径落盘、设置界面真控件、真机验证脚本在）；`tools/test_agent_features.py`：157 通过 / 0 失败；
+  `tools/eval_tasks.py`：38/38；`main.py --selftest`：36/36。
+- 文档：README 能力对照表把 LoRA 从「独立训练脚本」改成「桌面主链路（可选 provider）」并写明边界；
+  新增「本地微调模型（LoRA）」一节（装依赖 → 训练 → 开开关）；架构说明的 Mermaid 图补上
+  `lora_engine` 节点与连线；QUICK_START 扩到 14 条断言（新增第 14 条手验步骤）。
+- 三份文档的 pytest 条数与契约条数由契约脚本对着真实收集结果核，写错就红。
+
 ## [2026-11-18] · 执行轨迹收进设置页：工程面板不该占用户的导航位
 
 > 用户发来截图：左侧导航第三项就是「执行轨迹」，整页是轮次 / 事件 / 动作 / 失败 / token 的表格，

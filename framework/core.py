@@ -489,6 +489,53 @@ class Framework(QObject):
             f"base_url={config.DEEPSEEK_BASE_URL} use_real={config.USE_REAL_AI}"
         )
 
+    def set_lora_config(self, enabled: bool = None, base_model: str = None,
+                        adapter_path: str = None, device: str = None):
+        """
+        应用用户在设置界面填写的本地微调模型配置（并持久化）。
+
+        关掉时把已加载的权重撤掉（腾内存），开掉时只是翻标记——权重等到
+        第一次真推理才加载，不在这里卡住界面。
+        """
+        from framework import lora_engine
+        if enabled is not None:
+            config.LORA_ENABLED = bool(enabled)
+        if base_model is not None:
+            config.LORA_BASE_MODEL = base_model.strip() \
+                or config.LORA_BASE_MODEL
+        if adapter_path is not None:
+            config.LORA_ADAPTER_PATH = adapter_path.strip() \
+                or config.LORA_ADAPTER_PATH
+        if device is not None:
+            config.LORA_DEVICE = device.strip() or config.LORA_DEVICE
+
+        saved = config.save_user_settings(
+            lora_enabled=config.LORA_ENABLED,
+            lora_base_model=config.LORA_BASE_MODEL,
+            lora_adapter_path=config.LORA_ADAPTER_PATH,
+            lora_device=config.LORA_DEVICE,
+        )
+        if not config.LORA_ENABLED:
+            try:
+                lora_engine.unload_runtime()
+            except Exception as e:      # noqa: BLE001 撤权重失败不许拖垮界面
+                logger.warning(f"[Framework] 释放本地微调权重失败: {e}")
+        logger.info(f"[Framework] 本地微调配置已更新: "
+                    f"enabled={config.LORA_ENABLED} "
+                    f"base={config.LORA_BASE_MODEL} "
+                    f"adapter={config.LORA_ADAPTER_PATH} "
+                    f"device={config.LORA_DEVICE} saved={saved}")
+
+    def lora_status_text(self) -> str:
+        """本地微调通路的状态文案（设置界面显示）"""
+        from framework import lora_engine
+        if not config.LORA_ENABLED:
+            return "未启用（对话走云端模型）"
+        info = lora_engine.status()
+        if info["ready"]:
+            return f"已启用 · {info['base_model']} · {info['reason']}"
+        return f"已启用但不可用 · {info['reason']}"
+
     def set_personality(self, personality: str):
         """切换性格（影响回复风格与移动速度）"""
         if personality in config.PERSONALITIES:

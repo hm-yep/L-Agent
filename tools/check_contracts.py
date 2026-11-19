@@ -524,13 +524,16 @@ def main() -> int:
           < core_src.find("self._send_doc_edit(instruction)")
           and 'f"{base}_修改{ext}"' in core_src)
     quick_src = (ROOT / "docs" / "QUICK_START.md").read_text(encoding="utf-8")
-    check("ADR 0007/0008/0009 与 QUICK_START 13 条断言齐备",
+    check("ADR 0007/0008/0009/0010 与 QUICK_START 14 条断言齐备",
           (ROOT / "docs" / "adr" / "0007-cross-end-shared-grant-channel.md").exists()
           and (ROOT / "docs" / "adr" / "0008-restorable-write-actions.md").exists()
           and (ROOT / "docs" / "adr"
                / "0009-qt-attribute-before-qapplication.md").exists()
-          and "13 条断言" in quick_src
-          and "断言 13：偏好默认不展示" in quick_src)
+          and (ROOT / "docs" / "adr"
+               / "0010-lora-as-main-chain-provider.md").exists()
+          and "14 条断言" in quick_src
+          and "断言 13：偏好默认不展示" in quick_src
+          and "断言 14：本地微调模型接进主链路" in quick_src)
     check("能力评测的动作分类覆盖 restorable 新桶",
           'cov["restorable"]' in (ROOT / "tools" / "eval_tasks.py").read_text(
               encoding="utf-8"))
@@ -594,6 +597,79 @@ def main() -> int:
               and "30 个工具动作" not in p.read_text(encoding="utf-8")
               for p in (ROOT / "README.md", ROOT / "产品功能介绍.md",
                         ROOT / "docs" / "架构说明.md")))
+
+    print("=== 本地微调（LoRA）：接入主链路 ===")
+    lora_engine_path = ROOT / "framework" / "lora_engine.py"
+    lora_format_path = ROOT / "framework" / "lora_format.py"
+    check("本地微调有运行时与格式两个模块",
+          lora_engine_path.exists() and lora_format_path.exists())
+    if lora_engine_path.exists() and lora_format_path.exists():
+        lora_engine_src = lora_engine_path.read_text(encoding="utf-8")
+        lora_format_src = lora_format_path.read_text(encoding="utf-8")
+    else:
+        lora_engine_src = lora_format_src = ""
+    train_src = (ROOT / "finetune" / "train_lora.py").read_text(encoding="utf-8")
+    infer_src = (ROOT / "finetune" / "inference.py").read_text(encoding="utf-8")
+    ui_mgr_src = (ROOT / "ui" / "ui_manager.py").read_text(encoding="utf-8")
+    # 提示词格式只有一处：训练脚本与产品推理都从 lora_format 取模板，
+    # 两边都不许再抄一份字面量（抄了就迟早漂）
+    check("提示词格式单一真源（训练与推理共用 lora_format）",
+          "from framework import lora_format" in train_src
+          and "from framework import lora_format" in infer_src
+          and "lora_format.build_user_prompt(" in lora_engine_src
+          and "### 指令：" not in train_src
+          and "### 指令：" not in infer_src
+          and "### 指令：" in lora_format_src)
+    # 本地微调是主链路的一个 provider，不是旁路脚本
+    check("本地微调接进主链路（本地→云端→离线兜底）",
+          "def _request_model(" in ai_src
+          and "def _request_lora(" in ai_src
+          and "config.LORA_ENABLED" in ai_src
+          and "self._request_model()" in ai_src
+          and ai_src.index("def _request_model(")
+          < ai_src.index("def _request_deepseek("))
+    # 答得不合协议就退云端，不拿废动作糊弄
+    check("本地微调不合协议时退给云端（不拿废动作糊弄）",
+          "不合协议" in ai_src
+          and "normalize_action" in ai_src
+          and "本地微调推理失败" in ai_src)
+    # 重依赖不许进主链路：torch/peft/transformers 只在可选组，
+    # 且运行时模块顶层不许 import 它们（import 一次好几秒）。
+    # 只看**顶层** import：函数内的懒加载是允许的（这正是本项目的写法）。
+    check("本地微调的重量级依赖不进主链路",
+          not any(l.startswith(("import torch", "import peft",
+                                "import transformers", "from peft",
+                                "from transformers"))
+                  for l in lora_engine_src.splitlines())
+          and "torch>=" in finetune and "peft>=" in finetune
+          and "transformers>=" in finetune
+          and not any(("torch>=" in l or "peft>=" in l or "transformers>=" in l)
+                      for l in (ROOT / "requirements.txt").read_text(
+                          encoding="utf-8").splitlines()))
+    # 开关与路径落盘，下次启动读回同样的值
+    check("本地微调开关与路径落盘且下次启动读回",
+          all(k in config_src for k in ("lora_enabled", "lora_base_model",
+                                        "lora_adapter_path", "lora_device"))
+          and "def set_lora_config" in core_src
+          and "def lora_status_text" in core_src)
+    # 设置界面有真控件，不是摆设
+    check("设置界面的本地微调控件真接线（开关/基座/适配器/测试）",
+          "lora_config_changed" in ui_mgr_src
+          and "test_lora_requested" in ui_mgr_src
+          and "self._lora_enabled" in ui_mgr_src
+          and "self._lora_base" in ui_mgr_src
+          and "self._lora_adapter" in ui_mgr_src
+          and "self._lora_test_btn" in ui_mgr_src
+          and "lora_config_changed.connect" in pet_src
+          and "test_lora_requested.connect" in pet_src)
+    # ADR 0010 的「怎么证明」里写了真机验证脚本，脚本被删了 ADR 就开始说谎
+    check("真机验证脚本在（ADR 0010 指着它）",
+          (ROOT / "tools" / "verify_lora_runtime.py").exists()
+          and (ROOT / "docs" / "adr"
+               / "0010-lora-as-main-chain-provider.md").exists()
+          and "verify_lora_runtime.py" in
+          (ROOT / "docs" / "adr"
+           / "0010-lora-as-main-chain-provider.md").read_text(encoding="utf-8"))
 
     print("=== 文档口径 ===")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

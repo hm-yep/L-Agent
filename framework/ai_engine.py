@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
-"""AI 引擎：DeepSeek API（真·自由对话版）
+"""AI 引擎：本地微调模型（LoRA）/ DeepSeek API（真·自由对话版）
 
 设计要点（不再是"预设指令的人机"）：
 - 除工具调用（搜索/打开应用等必须走本地能力）外，用户说什么都由模型自己回答，
   包括闲聊、冷笑话、讲数学题、知识问答、学习教育等任意话题。
 - 模型通过 JSON 返回动作序列；普通对话就是 {"action":"show_bubble","text":"模型的回答"}
 - USE_REAL_AI=False 时降级为本地规则模拟（开发/无网络场景）。
+
+Provider 顺序（framework/ai_engine.py 的 _request_model）：
+    本地微调模型（config.LORA_ENABLED 开启时）-> DeepSeek API -> 离线规则兜底。
+    本地通路只吃当前这一句用户输入，答得不合动作协议就如实退给云端。
 
 AI 配置项在运行时从 framework.config 读取，可在设置界面修改并持久化：
     api_key / base_url / model
@@ -280,7 +284,7 @@ class AIWorker(QThread):
 
     def run(self):
         try:
-            actions = self._request_deepseek()
+            actions = self._request_model()
         except Exception as e:  # noqa: BLE001
             logger.error(f"[AI] 请求异常: {e}")
             if not self._stopped:
@@ -339,6 +343,72 @@ class AIWorker(QThread):
         messages.extend(self.history[-config.MEMORY_MAX_TURNS * 2:])
         messages.append({"role": "user", "content": self.message})
         return messages
+
+    # ------------------------------------------------------------
+    # Provider 路由：本地微调（LoRA）-> 云端模型 -> 离线规则兜底
+    # ------------------------------------------------------------
+    def _request_model(self):
+        """按顺序问各家要动作列表，谁先给出合乎协议的结果就用谁。
+
+        顺序是「本地优先」：用户显式开了本地微调，就先问本地；本地不可用
+        （缺依赖 / 缺权重 / 答得不合协议）时如实往下退，而不是拿一个
+        半生不熟的结果糊弄过去。云端也没有配置 Key 时，再退到离线规则。
+        """
+        if config.LORA_ENABLED:
+            actions = self._request_lora()
+            if actions:
+                return actions
+            logger.warning("[AI] 本地微调通路没给出可用结果，改走云端模型")
+        return self._request_deepseek()
+
+    def _request_lora(self):
+        """本地 LoRA 推理（基座 + 适配器）。
+
+        返回动作列表；不可用或不合协议返回 None，由上层改走云端。
+        这里刻意不注入长期记忆 / 检索资料 / 人设提示词：本地模型只吃
+        当前这一句用户输入（训练集 31 条样本覆盖的就是这一类）。
+        """
+        from framework import lora_engine
+        try:
+            text = lora_engine.generate_for(self.message)
+        except Exception as e:      # noqa: BLE001 本地通路出问题不拖垮主链路
+            logger.warning(f"[AI] 本地微调推理失败: {e}")
+            return None
+        if not text or not str(text).strip():
+            logger.warning("[AI] 本地微调模型返回空内容")
+            return None
+        text = str(text).strip()
+
+        # 先剥 markdown 代码块（模型爱把 JSON 包起来）
+        m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        payload = m.group(1).strip() if m else text
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        if data is None:
+            if payload.startswith(("{", "[")):
+                # 明显是想吐动作 JSON 却吐坏了：不合协议，退给云端，
+                # 别把半截 JSON 当人话显示给用户
+                logger.warning("[AI] 本地微调输出是残缺的 JSON，不合协议")
+                return None
+            # 确实是一段人话：当回答收下
+            actions = [{"action": "show_bubble", "text": payload[:400]}]
+        else:
+            if isinstance(data, dict):
+                data = data.get("actions", [data])
+            if not isinstance(data, list):
+                logger.warning("[AI] 本地微调输出格式不对，不合协议")
+                return None
+            actions = data
+        # 至少要有一个合法动作：全是废动作等于没答上来
+        from framework.action_parser import normalize_action
+        if not any(normalize_action(a) for a in actions
+                   if isinstance(a, dict)):
+            logger.warning("[AI] 本地微调输出里没有合法动作")
+            return None
+        logger.info(f"[AI] 本地微调模型返回 {len(actions)} 个动作")
+        return actions
 
     def _request_deepseek(self):
         """

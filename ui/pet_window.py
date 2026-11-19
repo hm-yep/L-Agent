@@ -155,6 +155,8 @@ class PetWindow(QWidget):
         self.settings.volume_changed.connect(self.sound.set_volume)
         self.settings.ai_config_changed.connect(self._apply_ai_config)
         self.settings.test_ai_requested.connect(self._test_ai_connection)
+        self.settings.lora_config_changed.connect(self._apply_lora_config)
+        self.settings.test_lora_requested.connect(self._test_lora)
         self.settings.exit_requested.connect(self.quit_app)
         self.settings.refresh_status(self.fw.ai_status_text())
         self.tray.exit_requested.connect(self.quit_app)
@@ -942,6 +944,8 @@ class PetWindow(QWidget):
 
     def show_settings(self):
         """显示设置窗口（贴着角色弹出，越界时自动收进屏幕）"""
+        self.settings.refresh_status(self.fw.ai_status_text())
+        self.settings.refresh_lora_status(self.fw.lora_status_text())
         self.settings.show_near(QRect(self.x(), self.y(),
                                       self.width(), self.height()))
 
@@ -1007,6 +1011,46 @@ class PetWindow(QWidget):
         self._tester.done.connect(self._tester.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
+
+    def _apply_lora_config(self, enabled: bool, base_model: str,
+                            adapter_path: str, device: str):
+        """用户在设置界面保存的本地微调模型配置（自动持久化）"""
+        self.fw.set_lora_config(enabled, base_model, adapter_path, device)
+        self.settings.set_lora_status(self.fw.lora_status_text())
+        self.sound.play("click")
+
+    def _test_lora(self, base_model: str, adapter_path: str, device: str):
+        """后台线程测试本地微调模型能不能加载（加载很慢，别卡住界面）"""
+        from PyQt5.QtCore import QThread, QObject, pyqtSignal, Qt
+
+        class _Tester(QObject):
+            done = pyqtSignal(bool, str)
+
+            def run(self, b, a, d):
+                from framework.lora_engine import test_load
+                ok, msg = test_load(b, a, d)
+                self.done.emit(ok, msg)
+
+        self._lora_tester = _Tester()
+        thread = QThread(self)
+        self._lora_thread = thread
+        self._lora_tester.moveToThread(thread)
+        thread.started.connect(
+            lambda: self._lora_tester.run(base_model, adapter_path, device)
+        )
+        # 跨线程回 GUI：显式排队，别在工作线程里直接碰控件
+        self._lora_tester.done.connect(self._on_lora_test_done,
+                                       Qt.QueuedConnection)
+        self._lora_tester.done.connect(self._lora_tester.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_lora_test_done(self, ok: bool, msg: str):
+        """本地微调加载测试的结果（回到 GUI 线程才更新界面）"""
+        self.settings.set_lora_status(("✓ " if ok else "✗ ") + msg)
+        thread = getattr(self, "_lora_thread", None)
+        if thread is not None:
+            thread.quit()
 
     def _set_proactive(self, enabled: bool):
         """主动互动开关"""
