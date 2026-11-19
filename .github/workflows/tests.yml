@@ -14,11 +14,20 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen   # 无桌面会话下让 Qt 以离屏模式加载
       PYTHONIOENCODING: utf-8      # 规避 GBK 控制台在打印中文/emoji 断言行时崩溃
-      # 轨迹 / 偏好 / 规则 / 记忆 / 任务台全部落到 runner 临时目录，
-      # CI 不写脏工作区，也让每轮测试从干净状态开始。
-      LINGLING_DATA_DIR: ${{ runner.temp }}/lingling-data
+      # 注意：LINGLING_DATA_DIR 不能写在这里。job 级 env 只允许
+      # github / needs / strategy / matrix / vars / secrets / inputs 七个 context，
+      # runner 不在合法列表中（runner 仅可用于 steps.* 等位置）。
+      # 一旦在这种位置引用 runner 的 temp 目录，workflow 解析阶段即判无效，
+      # run 会在 3 秒内 failure 且不产生任何 job。故改由下面的步骤注入。
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare isolated data dir
+        # 轨迹 / 偏好 / 规则 / 记忆 / 任务台全部落到 runner 临时目录，
+        # CI 不写脏工作区，也让每轮测试从干净状态开始。
+        # 通过 $GITHUB_ENV 注入：step 级允许使用 runner context。
+        shell: bash
+        run: echo "LINGLING_DATA_DIR=${RUNNER_TEMP}/lingling-data" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
