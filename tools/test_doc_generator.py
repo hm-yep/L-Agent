@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""文档生成功能验证（PPT / Word / Excel）
+"""文档生成功能验证（PPT / Word / Excel / PDF / HTML）
 
 覆盖：动作解析、离线模拟、真实生成+回读、规模防御、总开关拦截、
 后台线程执行链。所有文件都写到临时目录，测完清理。
@@ -63,7 +63,13 @@ check("别名 type/表格 -> xlsx，缺 content 补空 dict",
       len(out) == 1 and out[0]["doc_type"] == "xlsx"
       and out[0]["content"] == {})
 
-out = parse_actions([{"action": "create_doc", "doc_type": "pdf",
+out = parse_actions([{"action": "create_doc", "doc_type": "PDF",
+                      "filename": "报告.pdf", "content": {"title": "报告"}}])
+check("PDF 类型归一化并保留", len(out) == 1
+      and out[0]["doc_type"] == "pdf" and out[0]["filename"] == "报告.pdf",
+      str(out))
+
+out = parse_actions([{"action": "create_doc", "doc_type": "txt",
                       "content": {"a": 1}}])
 check("不认识的类型被剔除",
       all(a.get("action") != "create_doc" for a in out), str(out))
@@ -88,6 +94,7 @@ print("\n二、离线模拟与意图判定")
 # ============================================================
 for text, dtype in (("帮我做个PPT", "ppt"), ("生成幻灯片", "ppt"),
                     ("做个Excel表格", "xlsx"), ("整理个名单", "xlsx"),
+                    ("生成PDF报告并保存到桌面", "pdf"),
                     ("写个word文档", "doc"), ("帮我写份报告", "doc")):
     acts = [a["action"] for a in mock_ai(text, "活泼")]
     doc = [a for a in mock_ai(text, "活泼") if a["action"] == "create_doc"]
@@ -98,8 +105,13 @@ acts = [a["action"] for a in mock_ai("打开word", "活泼")]
 check("「打开word」不误触文档生成", "open_app" in acts
       and "create_doc" not in acts, str(acts))
 
-check("is_doc_request 命中", is_doc_request("做个PPT介绍项目"))
+check("is_doc_request 命中", is_doc_request("做个PPT介绍项目")
+      and is_doc_request("生成一份PDF"))
 check("is_doc_request 不命中闲聊", not is_doc_request("今天天气怎么样"))
+pdf_mock = [a for a in mock_ai("生成PDF并保存到桌面", "活泼")
+            if a["action"] == "create_doc"]
+check("离线 PDF 带桌面保存位置", pdf_mock
+      and pdf_mock[0].get("location") == "desktop")
 
 # ============================================================
 print("\n三、真实生成 + 回读（临时目录）")
@@ -150,6 +162,35 @@ if ok:
     check("Word 内嵌表格", t.rows[1].cells[0].text == "a"
           and t.rows[2].cells[1].text == "2")
 
+path = os.path.join(TMP, "中文报告.pdf")
+ok, err = generate("pdf", {
+    "title": "项目交付报告", "subtitle": "凌零出品",
+    "sections": [
+        {"heading": "执行摘要",
+         "paragraphs": ["中文段落与 English 混排，特殊字符 <安全>。",
+                        "这一段用于验证 PDF 保留可复制的文字层。"],
+         "table": {"headers": ["事项", "状态"],
+                   "rows": [["功能开发", "已完成"], ["测试验收", "进行中"]]}},
+        {"heading": "后续计划", "paragraphs": ["继续完成交付验证。"]},
+    ]}, path)
+check("PDF 生成成功", ok and os.path.exists(path), err)
+if ok:
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    compact_pdf_text = "".join(pdf_text.split())
+    check("PDF 有页面且文件非空", len(reader.pages) >= 1
+          and os.path.getsize(path) > 1000)
+    check("PDF 中文标题与章节可回读",
+          all(s in compact_pdf_text for s in
+              ("项目交付报告", "凌零出品", "执行摘要", "后续计划")), pdf_text)
+    check("PDF 中英文段落与特殊字符可回读",
+          "中文段落与English混排" in compact_pdf_text
+          and "<安全>" in compact_pdf_text)
+    check("PDF 中文表格可回读",
+          all(s in compact_pdf_text for s in
+              ("事项", "状态", "功能开发", "已完成", "测试验收", "进行中")))
+
 path = os.path.join(TMP, "测试.xlsx")
 ok, err = generate("xlsx", {"sheets": [{"name": "名单",
                                         "headers": ["姓名", "进度"],
@@ -192,7 +233,9 @@ check("网页缺 sections 报错", not ok and "sections" in err, err)
 # 失败路径
 ok, err = generate("ppt", {"title": "空"}, os.path.join(TMP, "空.pptx"))
 check("缺 slides 内容报错", not ok and "slides" in err, err)
-ok, err = generate("pdf", {"a": 1}, os.path.join(TMP, "x.pdf"))
+ok, err = generate("pdf", {"title": "空"}, os.path.join(TMP, "x.pdf"))
+check("PDF 缺 sections 报错", not ok and "sections" in err, err)
+ok, err = generate("txt", {"a": 1}, os.path.join(TMP, "x.txt"))
 check("不支持的类型报错", not ok, err)
 ok, err = generate("doc", {"sections": []}, os.path.join(TMP, "y.docx"))
 check("缺 sections 报错", not ok, err)
@@ -305,7 +348,8 @@ fw.tasks.deliveries, fw.tasks.worklog = [], []
 bubbles = []
 cards = []
 fw.show_bubble = lambda text: bubbles.append(text)
-fw.show_card = lambda title, path_, size="": cards.append((title, path_, size))
+fw.show_card = lambda title, path_, size="", icon="": \
+    cards.append((title, path_, size, icon))
 finished = []
 fw._finish_action = lambda: finished.append(True)
 _real_use_ai = config.USE_REAL_AI
@@ -339,7 +383,8 @@ while not cards and deadline < 30:
     pump(0.2)
     deadline += 1
 check("后台线程完成并反馈卡片",
-      len(cards) == 1 and cards[0][0] == "📄 文档已生成"
+      len(cards) == 1 and cards[0][0] == "文档已生成"
+      and cards[0][3] == "file-text"
       and cards[0][1] == target, str(cards))
 check("文件真实落盘", os.path.exists(target) and os.path.getsize(target) > 0)
 check("成功气泡与完成回调", any("生成" in b for b in bubbles) and finished)
@@ -478,6 +523,35 @@ check("直接保存到指定目录并反馈卡片",
       any("文档已生成" in c[0] for c in cards)
       and os.path.exists(os.path.join(TMP, "免弹窗.html")),
       str(cards))
+
+# PDF 全链路：指定桌面位置（打桩到临时目录）-> 后台生成 -> 交付登记 -> 回读
+cards.clear()
+fw._do_create_doc({"doc_type": "pdf", "filename": "桌面报告.pdf",
+                   "location": "desktop",
+                   "content": {"title": "桌面 PDF 验收",
+                               "sections": [
+                                   {"heading": "生成结果",
+                                    "paragraphs": ["PDF 已直接保存到指定目录。",
+                                                   "整个过程不弹出保存对话框。"]},
+                                   {"heading": "交付检查",
+                                    "paragraphs": ["交付清单记录文件路径和 PDF 类型。"]}]}})
+deadline = 0
+while not cards and deadline < 30:
+    pump(0.2)
+    deadline += 1
+pdf_target = os.path.join(TMP, "桌面报告.pdf")
+check("PDF 指定位置保存不弹对话框", calls == []
+      and os.path.exists(pdf_target), str(cards))
+check("PDF 全链路反馈与交付登记",
+      any(c[1] == pdf_target for c in cards)
+      and any(d.get("path") == pdf_target and d.get("kind") == "pdf"
+              for d in fw.tasks.deliveries), str(fw.tasks.deliveries))
+if os.path.exists(pdf_target):
+    from pypdf import PdfReader
+    delivered_text = "".join(
+        page.extract_text() or "" for page in PdfReader(pdf_target).pages)
+    check("桌面 PDF 成品可回读", "桌面 PDF 验收" in delivered_text
+          and "交付清单记录文件路径" in delivered_text)
 _dg.resolve_location = _real_resolve
 
 config.USE_REAL_AI = _real_use_ai

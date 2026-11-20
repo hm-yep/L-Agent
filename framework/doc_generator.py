@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""文档生成：AI 提供"结构化内容"，本地渲染成 PPT / Word / Excel 文件
+"""文档生成：AI 提供"结构化内容"，本地渲染成 PPT / Word / Excel / PDF / HTML 文件
 
     from framework.doc_generator import generate, normalize_doc_type
     ok, err = generate("ppt", spec, r"C:\\Users\\me\\Desktop\\汇报.pptx")
@@ -11,6 +11,7 @@ spec 结构约定（由大模型按 SYSTEM_PROMPT 产出、action_parser 清洗�
 - doc:  {"title": str,
          "sections": [{"heading": str, "paragraphs": [str, ...],
                        "table"?: {"headers": [str], "rows": [[...], ...]}}]}
+- pdf:  同 doc，额外支持可选 subtitle
 - xlsx: {"sheets": [{"name": str, "headers": [str], "rows": [[...], ...]}, ...]}
 
 设计：
@@ -106,7 +107,7 @@ def resolve_template(spec: dict) -> dict:
 
 
 DOC_TYPE_EXTS = {"ppt": ".pptx", "doc": ".docx", "xlsx": ".xlsx",
-                 "html": ".html"}
+                 "pdf": ".pdf", "html": ".html"}
 
 # Word / Excel 共用的主题色（沿用默认深空蓝色系）
 _DARK = (0x0F, 0x2B, 0x46)     # 标题深色
@@ -248,10 +249,12 @@ def unique_path(path: str) -> str:
 
 
 def normalize_doc_type(value) -> str:
-    """把模型给的各种叫法归一成 ppt / doc / xlsx / html，未知返回空串"""
+    """把模型给的各种叫法归一成 ppt / doc / xlsx / pdf / html，未知返回空串"""
     v = str(value or "").strip().lower()
     if v in ("ppt", "pptx", "幻灯片", "演示文稿", "slides"):
         return "ppt"
+    if v in ("pdf", "pdf文档", "pdf报告"):
+        return "pdf"
     if v in ("doc", "docx", "word", "文档", "文章", "报告"):
         return "doc"
     if v in ("xlsx", "excel", "表格", "电子表格", "sheet"):
@@ -300,6 +303,8 @@ def generate(doc_type: str, spec: dict, save_path: str, images: dict = None):
             _gen_ppt(spec, save_path, images or {})
         elif kind == "doc":
             _gen_doc(spec, save_path)
+        elif kind == "pdf":
+            _gen_pdf(spec, save_path)
         elif kind == "html":
             _gen_html(spec, save_path)
         else:
@@ -833,6 +838,159 @@ def _gen_doc(spec: dict, path: str):
                         cell = row[j] if j < len(row) else ""
                         t.rows[i].cells[j].text = _clean(cell, config.DOC_MAX_TEXT)
     document.save(path)
+
+
+# ------------------------------------------------------------
+# PDF（ReportLab 排版 + 中文字体嵌入，保留可复制的文字层）
+# ------------------------------------------------------------
+def _pdf_font_name(style: dict) -> str:
+    """优先嵌入 Windows 中文字体；无可用字体时退回内置中文 CID 字体"""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_files = {
+        "微软雅黑": "msyh.ttc", "microsoft yahei": "msyh.ttc",
+        "宋体": "simsun.ttc", "simsun": "simsun.ttc",
+        "黑体": "simhei.ttf", "simhei": "simhei.ttf",
+        "楷体": "simkai.ttf", "仿宋": "simfang.ttf", "隶书": "simli.ttf",
+    }
+    requested = str(style.get("font") or "").strip().lower()
+    candidates = [font_files[requested]] if requested in font_files else []
+    candidates += ["msyh.ttc", "simsun.ttc", "simhei.ttf"]
+    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    for filename in dict.fromkeys(candidates):
+        path = os.path.join(font_dir, filename)
+        if not os.path.isfile(path):
+            continue
+        name = "LingLing_" + os.path.splitext(filename)[0]
+        try:
+            if name not in pdfmetrics.getRegisteredFontNames():
+                kwargs = {"subfontIndex": 0} if filename.endswith(".ttc") else {}
+                pdfmetrics.registerFont(TTFont(name, path, **kwargs))
+            return name
+        except Exception as e:  # 单个字体损坏时继续尝试下一款
+            logger.warning(f"[Doc] PDF 字体加载失败 {filename}: {e}")
+    name = "STSong-Light"
+    if name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont(name))
+    return name
+
+
+def _gen_pdf(spec: dict, path: str):
+    """把与 Word 同构的 sections 渲染成带中文文字层的 PDF"""
+    from xml.sax.saxutils import escape
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer,
+                                    Table, TableStyle)
+
+    sections = spec.get("sections")
+    if isinstance(sections, dict):
+        sections = [sections]
+    if not isinstance(sections, list) or not sections:
+        raise ValueError("PDF 缺少 sections 内容")
+    sections = sections[: config.DOC_MAX_SLIDES]
+
+    style = resolve_style(spec)
+    font_name = _pdf_font_name(style)
+    title_size = style.get("title_size") or 26
+    body_size = style.get("body_size") or 11
+    line_spacing = style.get("line_spacing") or 1.65
+    title_color = colors.HexColor(_css_hex(style.get("title_color") or _DARK))
+    accent_color = colors.HexColor(_css_hex(style.get("accent_color") or _THEME))
+    text_color = colors.HexColor("#26303A")
+    gray_color = colors.HexColor("#7A8B99")
+
+    def para_style(name, **kwargs):
+        kwargs.setdefault("textColor", text_color)
+        return ParagraphStyle(name, fontName=font_name, wordWrap="CJK", **kwargs)
+
+    title_style = para_style(
+        "PdfTitle", fontSize=title_size, leading=title_size * 1.25,
+        alignment=TA_CENTER, textColor=title_color, spaceAfter=7 * mm)
+    subtitle_style = para_style(
+        "PdfSubtitle", fontSize=body_size, leading=body_size * 1.5,
+        alignment=TA_CENTER, textColor=gray_color, spaceAfter=9 * mm)
+    heading_style = para_style(
+        "PdfHeading", fontSize=max(body_size + 4, 16),
+        leading=max(body_size + 4, 16) * 1.4, textColor=accent_color,
+        spaceBefore=4 * mm, spaceAfter=3 * mm, keepWithNext=True)
+    body_style = para_style(
+        "PdfBody", fontSize=body_size, leading=body_size * line_spacing,
+        spaceAfter=2.5 * mm)
+    cell_style = para_style(
+        "PdfCell", fontSize=min(body_size, 10), leading=min(body_size, 10) * 1.4)
+    header_cell_style = para_style(
+        "PdfHeaderCell", fontSize=min(body_size, 10),
+        leading=min(body_size, 10) * 1.4, textColor=colors.white)
+
+    title = _clean(spec.get("title"), 120) or "未命名文档"
+    subtitle = _clean(spec.get("subtitle"), 160)
+    left = right = 20 * mm
+    doc = SimpleDocTemplate(
+        path, pagesize=A4, leftMargin=left, rightMargin=right,
+        topMargin=20 * mm, bottomMargin=20 * mm,
+        title=title, author="凌零 · 桌面AI助手")
+    story = [Paragraph(escape(title), title_style)]
+    if subtitle:
+        story.append(Paragraph(escape(subtitle), subtitle_style))
+
+    usable_width = A4[0] - left - right
+    for sec in sections:
+        if not isinstance(sec, dict):
+            continue
+        heading = _clean(sec.get("heading"), 100)
+        if heading:
+            story.append(Paragraph(escape(heading), heading_style))
+        for text in _str_list(sec.get("paragraphs"), config.DOC_MAX_TEXT):
+            story.append(Paragraph(escape(text), body_style))
+        table = sec.get("table")
+        if not isinstance(table, dict):
+            continue
+        headers = _str_list(table.get("headers"), 60)[:8]
+        rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+        if not headers:
+            continue
+        data = [[Paragraph(escape(h) or " ", header_cell_style)
+                 for h in headers]]
+        for row in rows[: config.DOC_MAX_ROWS]:
+            if not isinstance(row, (list, tuple)):
+                continue
+            cells = [_clean(v, config.DOC_MAX_TEXT) for v in row[:len(headers)]]
+            cells += [""] * (len(headers) - len(cells))
+            data.append([Paragraph(escape(v) or " ", cell_style) for v in cells])
+        if len(data) == 1:
+            continue
+        pdf_table = Table(data, colWidths=[usable_width / len(headers)] * len(headers),
+                          repeatRows=1, hAlign="LEFT", splitByRow=1)
+        pdf_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), accent_color),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E2EA")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#EEF4F9")]),
+        ]))
+        story.extend([Spacer(1, 2 * mm), pdf_table, Spacer(1, 3 * mm)])
+
+    def draw_footer(canvas, document):
+        canvas.saveState()
+        canvas.setFont(font_name, 8)
+        canvas.setFillColor(gray_color)
+        canvas.drawString(left, 10 * mm, "凌零 · 桌面AI助手")
+        canvas.drawRightString(A4[0] - right, 10 * mm,
+                               f"第 {document.page} 页")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
 
 
 # ------------------------------------------------------------

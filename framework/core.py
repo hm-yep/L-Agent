@@ -283,6 +283,8 @@ class Framework(QObject):
         self._plan_pending_queue = []               # 确认后要执行的后续动作
         self._plan_round_had_actions = False        # 上一轮模型是否给了实质动作
         self._plan_round_pending = False            # 已有一轮计划请求在途
+        self._plan_done_at_round_start = 0          # 本轮开始时已推进的步数（判空转）
+        self._plan_no_progress_rounds = 0           # 连续零推进轮数（空转到上限就重规划）
         self._suppress_fallback = False             # 计划轮次不走意图兜底
         self.plan_card = None                       # 常驻计划卡（ui/plan_card.py，懒加载）
         # ---- 会话内授权（F2/F3）：唯一真源是 grant_service，桌面与网页共用 ----
@@ -443,11 +445,12 @@ class Framework(QObject):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[Framework] 姿态回调失败: {e}")
 
-    def show_card(self, title: str, path: str = "", size: str = ""):
-        """直接显示信息卡片"""
+    def show_card(self, title: str, path: str = "", size: str = "",
+                  icon: str = ""):
+        """直接显示信息卡片（icon 为 ui.icons 里的矢量线框图标名）"""
         try:
             self._callbacks["show_card"](
-                {"title": title, "path": path, "size": size}
+                {"title": title, "path": path, "size": size, "icon": icon}
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[Framework] 卡片回调失败: {e}")
@@ -783,7 +786,8 @@ class Framework(QObject):
     # AI 线程的唯一出入口
     # ============================================================
     def _start_ai_worker(self, message: str, *, history=None,
-                         facts=None, notes=None, skills=None):
+                         facts=None, notes=None, skills=None,
+                         allow_lora=True):
         """创建并启动一轮 AI 请求。
 
         以前有 6 个调用点各自 new 一个 AIWorker 并重复 connect，而且只有
@@ -793,6 +797,10 @@ class Framework(QObject):
 
         facts / notes / skills 传 None 表示「不传这个参数」，保留各调用点
         原本的上下文口径（例如文件改写轮刻意不带记忆与资料，避免串味）。
+
+        allow_lora=False 的轮次不许问本地微调（计划执行 / 重规划用）：
+        本地适配器的训练集是单指令样本，越界的计划提示下它只会背诵训练
+        里的动作（实测回一个 jump），那动作合协议却推进不了计划。
         """
         old = self._ai_worker
         if old is not None:
@@ -834,6 +842,10 @@ class Framework(QObject):
             kwargs["notes"] = notes
         if skills is not None:
             kwargs["skills"] = skills
+        if not allow_lora:
+            # 只在真的要关掉时才传这个 kwarg：集成自检里有个假 AIWorker，
+            # 它的签名不是随便能加参数的（见上面 prefs_text 那段注释）。
+            kwargs["allow_lora"] = False
         worker = AIWorker(
             message,
             self.memory.get_context() if history is None else history,
@@ -1170,6 +1182,8 @@ class Framework(QObject):
             doc_type = ""
             if "ppt" in low or "幻灯片" in text or "演示文稿" in text:
                 doc_type = "ppt"
+            elif "pdf" in low:
+                doc_type = "pdf"
             elif "excel" in low or "表格" in text or "名单" in text \
                     or "报表" in text:
                 doc_type = "xlsx"
@@ -1240,6 +1254,18 @@ class Framework(QObject):
                 if done >= len(steps):
                     self._complete_plan()
                     return
+                # 本轮跑了动作却一步没推进（模型只给了说话/表演类动作）：
+                # 连着几轮都这样，说明它推不动这一步——按「步骤受阻」处理，
+                # 走重规划那条路，而不是把轮次预算耗光、让计划卡原地打转。
+                if self._plan_round_had_actions \
+                        and self._plan_done <= self._plan_done_at_round_start:
+                    self._plan_no_progress_rounds += 1
+                    if self._plan_no_progress_rounds >= config.PLAN_NO_PROGRESS_ROUNDS:
+                        self._plan_no_progress_rounds = 0
+                        self._note_plan_failure(
+                            "模型连续只回了说话/表演类动作，没有推进步骤")
+                else:
+                    self._plan_no_progress_rounds = 0
                 fail_note = self._plan_fail_note
                 if fail_note:
                     # 步骤受阻：预算内先让 AI 自动重规划，用尽则交还用户
@@ -1648,10 +1674,11 @@ class Framework(QObject):
             f"（撤销：退回 {len(done)} 项 / 未成 {len(bad)} 项"
             + (f" / 撤不回 {len(spots)} 项" if spots else "") + "）")
         if lines or spots:
-            self.show_card("↩️ 这次撤销的明细",
+            self.show_card("这次撤销的明细",
                            "\n".join(lines + [f"· 撤不回：{x}" for x in spots]),
                            f"退回 {len(done)} 项 / 没撤成 {len(bad)} 项 / "
-                           f"本来就撤不回 {len(spots)} 项")
+                           f"本来就撤不回 {len(spots)} 项",
+                           icon="corner-up-left")
         self._finish_action()
 
     # ============================================================
@@ -1756,8 +1783,9 @@ class Framework(QObject):
                  f"{'，需要' + '、'.join(s['slots']) if s['slots'] else ''}）"
                  for s in items]
         used = sum(int(s.get("used", 0)) for s in items)
-        self.show_card("🎯 我学会的技能", "\n".join(lines),
-                       f"共 {len(items)} 条，用过 {used} 次")
+        self.show_card("我学会的技能", "\n".join(lines),
+                       f"共 {len(items)} 条，用过 {used} 次",
+                       icon="sparkle")
 
     # ============================================================
     # 搜索应用动作
@@ -1890,7 +1918,7 @@ class Framework(QObject):
             if pixmap.save(path):
                 self.set_emotion("star")
                 self.show_bubble("截图已保存！")
-                self.show_card("📸 截图已保存", path, "")
+                self.show_card("截图已保存", path, "", icon="image")
                 logger.info(f"[Framework] 截图已保存: {path}")
             else:
                 self.set_emotion("sweat")
@@ -2098,7 +2126,7 @@ class Framework(QObject):
         content = action.get("content") or {}
         if kind not in DOC_TYPE_EXTS:
             self.set_emotion("sweat")
-            self.show_bubble("这种文档类型我还不会做，请说 PPT、Word 或表格。")
+            self.show_bubble("这种文档类型我还不会做，请说 PPT、Word、表格或 PDF。")
             self._note_plan_failure(f"文档类型 {kind} 不支持")
             self._finish_action()
             return
@@ -2189,6 +2217,7 @@ class Framework(QObject):
             type_label = {"ppt": "演示文稿 (*.pptx)",
                           "doc": "Word 文档 (*.docx)",
                           "xlsx": "Excel 表格 (*.xlsx)",
+                          "pdf": "PDF 文档 (*.pdf)",
                           "html": "网页报告 (*.html)"}[kind]
             self._stop_chain_watchdog()   # 用户慢慢选保存位置的时间不算超时
             path, _ = QFileDialog.getSaveFileName(
@@ -2228,8 +2257,8 @@ class Framework(QObject):
         self._suppress_fallback = True       # 纠正轮不走关键词兜底
         self._stop_chain_watchdog()          # 旧动作被纠正轮接替
         kind_label = {"ppt": "PPT", "doc": "Word 文档",
-                      "xlsx": "Excel 表格", "html": "网页报告"}.get(
-                          kind, "文档")
+                      "xlsx": "Excel 表格", "pdf": "PDF 文档",
+                      "html": "网页报告"}.get(kind, "文档")
         self.set_emotion("sweat")
         self.show_bubble(f"内容有点单薄（{reason}），我重新写一版更充实的。")
         message = (
@@ -2258,14 +2287,14 @@ class Framework(QObject):
             except OSError:
                 size_text = ""
             kind_label = {"ppt": "PPT", "doc": "Word 文档",
-                          "xlsx": "Excel 表格", "html": "网页报告"}.get(
-                              kind, "文档")
+                          "xlsx": "Excel 表格", "pdf": "PDF 文档",
+                          "html": "网页报告"}.get(kind, "文档")
             self.tasks.add_delivery(os.path.basename(path), path, kind)
             self.tasks.log_work("deliver",
                                 f"生成了{kind_label}《"
                                 f"{os.path.basename(path)}》")
             self.show_bubble(f"{kind_label}已生成，请查收！")
-            self.show_card("📄 文档已生成", path, size_text)
+            self.show_card("文档已生成", path, size_text, icon="file-text")
             self.memory.add("assistant", f"[系统] 已生成文档: {path}")
             if kind == "html":
                 try:            # 网页报告：默认浏览器直接打开验收
@@ -2450,15 +2479,20 @@ class Framework(QObject):
                 self.history_changed.emit()
             logger.info(f"[Framework] 任务计划: 自动重规划 -> "
                         f"{len(plan['steps'])} 步")
-            if self._plan_pending_queue:
-                self._busy = True
-                self._action_queue = self._plan_pending_queue
-                self._plan_pending_queue = []
-                self._run_next_action()
-            else:
-                self._busy = False
-                self.set_pose("idle")
-                QTimer.singleShot(600, self._plan_next_round)
+            # 「现场有变」气泡先停留片刻让用户看清，再继续推进后续动作，
+            # 否则下一动作的气泡会立刻把它顶掉，重规划提示一闪而过。
+            def _resume_after_replan():
+                if self._plan_pending_queue:
+                    self._busy = True
+                    self._action_queue = self._plan_pending_queue
+                    self._plan_pending_queue = []
+                    self._run_next_action()
+                else:
+                    self._busy = False
+                    self.set_pose("idle")
+                    QTimer.singleShot(600, self._plan_next_round)
+
+            QTimer.singleShot(900, _resume_after_replan)
             return
         # 上一个计划还没收尾就来了新计划：静默放下旧的
         if self._plan is not None:
@@ -2760,6 +2794,8 @@ class Framework(QObject):
         self._plan_auto_plan = False
         self._plan_fail_note = ""
         self._plan_done = 0
+        self._plan_done_at_round_start = 0
+        self._plan_no_progress_rounds = 0
         self._plan_pending_queue = []
 
     def _cancel_plan(self):
@@ -2837,12 +2873,14 @@ class Framework(QObject):
         self.history_changed.emit()
         self.set_pose("think")
         self._suppress_fallback = True   # 计划轮不走关键词兜底，避免误触发工具
+        self._plan_done_at_round_start = done   # 本轮起点，用于判断这轮是否空转
         logger.info(f"[Framework] 任务计划: 第 {plan['rounds']} 轮执行"
                     f"（{done}/{len(steps)}）")
         self._start_ai_worker(
             message,
             facts=self.memory.get_facts_text(),
-            notes=self._notes_text(), skills=self.skills.catalog_text())
+            notes=self._notes_text(), skills=self.skills.catalog_text(),
+            allow_lora=False)   # 计划语义不在本地微调训练集射程内，直接问云端
 
     def _note_plan_failure(self, reason: str):
         """计划执行中某步受阻：记下原因，本轮收口后触发自动重规划"""
@@ -2908,12 +2946,14 @@ class Framework(QObject):
         self.history_changed.emit()
         self.set_pose("think")
         self._suppress_fallback = True   # 重规划轮不走关键词兜底
+        self._plan_done_at_round_start = done   # 本轮起点，用于判断这轮是否空转
         logger.info(f"[Framework] 任务计划: 第 {plan['replans']} 次重规划"
                     f"（{done}/{len(steps)}，原因：{reason}）")
         self._start_ai_worker(
             message,
             facts=self.memory.get_facts_text(),
-            notes=self._notes_text(), skills=self.skills.catalog_text())
+            notes=self._notes_text(), skills=self.skills.catalog_text(),
+            allow_lora=False)   # 同上：重规划也要真能改步骤的模型来答
 
     # ============================================================
     # 定时提醒 / 待办清单（任务台持久化，重启不丢）
@@ -2983,10 +3023,11 @@ class Framework(QObject):
             self.set_emotion("sweat")
             if left:
                 self.show_bubble("没找到这条待办。现在手头的待办是：")
-                self.show_card("📋 待办清单",
+                self.show_card("待办清单",
                                "\n".join(f"{i}. {t['text']}"
                                          for i, t in enumerate(left, 1)),
-                               f"共 {len(left)} 件未完成")
+                               f"共 {len(left)} 件未完成",
+                               icon="list")
             else:
                 self.show_bubble("待办清单本来就是空的。")
         self._finish_action()
@@ -2997,10 +3038,11 @@ class Framework(QObject):
         if not left:
             self.show_bubble("待办清单是空的，很清净。")
         else:
-            self.show_card("📋 待办清单",
+            self.show_card("待办清单",
                            "\n".join(f"{i}. {t['text']}"
                                      for i, t in enumerate(left, 1)),
-                           f"共 {len(left)} 件未完成")
+                           f"共 {len(left)} 件未完成",
+                           icon="list")
         self._finish_action()
 
     # ============================================================
@@ -3413,7 +3455,8 @@ class Framework(QObject):
                 size_text = human_size(os.path.getsize(png))
             except OSError:
                 size_text = ""
-            self.show_card("📊 分析图表已生成", png, size_text)
+            self.show_card("分析图表已生成", png, size_text,
+                           icon="bar-chart")
         self.set_emotion("star")
         self.show_bubble(f"算完了《{name}》（{res['rows']} 行 × "
                          f"{res['cols']} 列），"
@@ -3434,8 +3477,9 @@ class Framework(QObject):
                 ts = time.localtime(w["ts"])
                 lines.append(f"{ts.tm_hour:02d}:{ts.tm_min:02d} {w['text']}")
             self.set_emotion("star")
-            self.show_card("📔 今天的工作日志",
-                           "\n".join(lines), f"今日共 {len(items)} 件")
+            self.show_card("今天的工作日志",
+                           "\n".join(lines), f"今日共 {len(items)} 件",
+                           icon="clipboard")
             self.tasks.log_work("report", "向用户汇报了今日工作")
         self._finish_action()
 
@@ -3485,7 +3529,7 @@ class Framework(QObject):
             return
         for r in due:
             self.set_emotion("exclaim")
-            self.show_bubble(f"⏰ 时间到！该去{r['text']}了！")
+            self.show_bubble(f"时间到！该去{r['text']}了！")
             self._alarm_jump_burst()
             self.memory.add("assistant", f"[系统] 提醒触发：{r['text']}")
             logger.info(f"[Framework] 提醒触发: {r['text']}")

@@ -119,6 +119,7 @@ class PetWindow(QWidget):
         self.preview = None                  # 预览页面（懒加载）
         self.workspace = None                # 可最大化的主工作台（懒加载）
         self._workspace_was_visible = False  # 截图前工作台是否可见
+        self._workspace_mode = False         # 工作台打开中：桌宠本体与浮层整体消失
 
         # ---- 注册 Framework 回调 ----
         self.fw.register_callback("show_bubble", self._on_bubble)
@@ -319,13 +320,17 @@ class PetWindow(QWidget):
     # ============================================================
     def _on_bubble(self, text: str):
         """显示气泡（锚定角色头顶）"""
+        if self._workspace_mode:
+            return   # 工作台打开中：桌宠浮层整体消失，不弹气泡
         self.bubble.show_text(text, self.x(), self.y())
 
     def _on_card(self, data: dict):
         """显示信息卡片（出现在角色旁边）"""
+        if self._workspace_mode:
+            return   # 工作台打开中：不弹信息卡片
         self.card.show_card(
             data.get("title", ""), data.get("path", ""), data.get("size", ""),
-            near_x=self.x(), near_y=self.y(),
+            near_x=self.x(), near_y=self.y(), icon=data.get("icon", ""),
         )
 
     def _on_pet_moved(self, x: int, y: int, direction: int):
@@ -579,7 +584,7 @@ class PetWindow(QWidget):
             listw.clear()
             for r in self.fw.tasks.reminders:
                 remain = r["at"] - now
-                listw.addItem(f"⏰ {r['text']}   （还剩 "
+                listw.addItem(f"{r['text']}   （还剩 "
                               f"{format_duration(remain)}）")
             if 0 <= row < listw.count():
                 listw.setCurrentRow(row)
@@ -932,7 +937,34 @@ class PetWindow(QWidget):
             self.workspace.settings_requested.connect(self.show_settings)
             # 「文件 → 退出程序」要真退出，不能只是发一个没人接的信号
             self.workspace.quit_requested.connect(self.quit_app)
+            # 工作台关掉/回桌宠时，把桌宠本体重新放出来
+            self.workspace.workspace_closed.connect(self._on_workspace_closed)
         self.workspace.open_workspace()
+        # 工作台铺开后收起桌宠本体与浮层，避免两者叠在桌面上
+        self._hide_pet_for_workspace()
+
+    def _hide_pet_for_workspace(self):
+        """打开工作台时让桌宠整体消失：本体 + 所有浮层一并收起。
+
+        光 hide 本体不够——气泡、信息卡、输入条是独立置顶窗口，工作台里
+        继续对话时 _on_bubble/_on_card 还会把它们重新弹出来。所以这里
+        同时挂起「工作台模式」，在此期间这些回调直接短路，浮层不再冒出。
+        """
+        self._workspace_mode = True
+        self.hide()
+        self.bubble.hide()
+        self.card.hide()
+        self.input_box.hide()
+        self.history_panel.hide()
+        plan_card = getattr(self.fw, "plan_card", None)
+        if plan_card is not None:
+            plan_card.hide()
+
+    def _on_workspace_closed(self):
+        """工作台关闭（点「回桌宠」/按 Esc / 点 X）后，重新显示桌宠本体。"""
+        self._workspace_mode = False
+        self.show()
+        self.raise_()
 
     def show_preview(self):
         """打开助手预览页面（前端组件调试台）"""

@@ -8,7 +8,7 @@
 """
 
 from PyQt5.QtCore import Qt, QEvent, QRect, QTimer, QPropertyAnimation, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QPainterPath
+from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QPainterPath, QTextDocument
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
     QCheckBox, QSystemTrayIcon, QMenu, QAction, QGraphicsOpacityEffect,
@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
 from framework import config
 from framework.utils import plain_text, resource_path, logger
 from . import theme
-from .icons import icon_label
+from .icons import icon_label, pixmap
 
 
 # ============================================================
@@ -111,12 +111,19 @@ class BubbleWidget(QWidget):
         if natural <= self.MAX_TEXT_WIDTH:
             # 短文本：不换行，一行一行排
             w = max(natural, 24)
-            h = fm.height() * max(len(lines), 1)
         else:
-            # 长文本：限宽换行，取换行后的真实高度
+            # 长文本：限宽换行，宽度取换行后最宽那一行
             rect = fm.boundingRect(0, 0, self.MAX_TEXT_WIDTH, 1000000,
                                    Qt.TextWordWrap, text)
-            w, h = rect.width(), rect.height()
+            w = rect.width()
+        # 高度改用 QTextDocument 精确测量：boundingRect / fm.height 对多行
+        # 文本少算行间距，长回复最后几行会被气泡底边拦腰截断。
+        doc = QTextDocument()
+        doc.setDefaultFont(self._label.font())
+        doc.setDocumentMargin(0)
+        doc.setTextWidth(max(1, w))
+        doc.setPlainText(text)
+        h = int(doc.size().height())
         # 2px 冗余防边缘裁切；手动定死窗口尺寸——不能走 adjustSize()，
         # 它读到的是布局缓存的旧 sizeHint（布局失效事件要等事件循环），
         # 会导致气泡尺寸滞后一轮、长文本被压成上一条的形状
@@ -199,8 +206,13 @@ class InfoCardWidget(QWidget):
                                   theme.SP["m"], theme.SP["m"])
         layout.setSpacing(theme.SP["s"])
 
-        # 标题行：名称 + 关闭按钮
+        # 标题行：矢量图标 + 名称 + 关闭按钮
         top = QHBoxLayout()
+        self._icon = QLabel(panel)
+        self._icon.setObjectName("cardIcon")
+        self._icon.setFixedSize(20, 20)
+        top.addWidget(self._icon)
+        top.addSpacing(theme.SP["xs"] if "xs" in theme.SP else 6)
         self._title = QLabel(panel)
         self._title.setObjectName("cardTitleFloat")
         top.addWidget(self._title)
@@ -246,9 +258,14 @@ class InfoCardWidget(QWidget):
 
     # ------------------------------------------------------------
     def show_card(self, title: str, path: str = "", size: str = "",
-                  near_x: int = None, near_y: int = None):
-        """展示卡片：出现在屏幕右下角或角色旁边"""
+                  near_x: int = None, near_y: int = None, icon: str = ""):
+        """展示卡片：出现在屏幕右下角或角色旁边（icon 为矢量线框图标名）"""
         self._title.setText(title)
+        if icon:
+            self._icon.setPixmap(pixmap(icon, theme.T("ACCENT"), 20))
+            self._icon.setVisible(True)
+        else:
+            self._icon.setVisible(False)
         self._path.setText(path or "—")
         self._size.setText(size or "")
         self._resize_path(self._path.text())
@@ -515,8 +532,8 @@ class SettingsDialog(QWidget):
         self._proactive.toggled.connect(self.proactive_changed.emit)
         layout.addWidget(self._proactive)
 
-        # 文档生成（AI 调用本机工具创建 PPT / Word / Excel）
-        self._doc = QCheckBox("允许凌零创建文件（PPT/Word/表格）")
+        # 文档生成（AI 调用本机工具创建 PPT / Word / Excel / PDF / HTML）
+        self._doc = QCheckBox("允许凌零创建文件（PPT/Word/表格/PDF）")
         self._doc.setChecked(config.ALLOW_DOC_GENERATION)
         self._doc.toggled.connect(self.doc_changed.emit)
         layout.addWidget(self._doc)

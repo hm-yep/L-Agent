@@ -181,7 +181,8 @@ fw.tasks.deliveries, fw.tasks.worklog = [], []
 bubbles = []
 cards = []
 fw.show_bubble = lambda text: bubbles.append(text)
-fw.show_card = lambda title, p, size="": cards.append((title, p, size))
+fw.show_card = lambda title, p, size="", icon="": \
+    cards.append((title, p, size, icon))
 fw._finish_action = lambda: (
     finished.append(True),
     QTimer.singleShot(150, fw._run_next_action)) and None

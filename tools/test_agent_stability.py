@@ -158,7 +158,7 @@ class FakeWorker(QObject):
     sent = []
 
     def __init__(self, message, history, personality, parent=None,
-                 facts="", notes=""):
+                 facts="", notes="", **_kwargs):
         super().__init__(parent)
         self.message = message
         FakeWorker.sent.append(message)
@@ -646,7 +646,7 @@ class _CapWorker(QObject):
     sent = ""
 
     def __init__(self, message, history, personality, parent=None,
-                 facts="", notes=""):
+                 facts="", notes="", **_kwargs):
         super().__init__(parent)
         _CapWorker.sent = message
 

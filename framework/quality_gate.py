@@ -85,7 +85,7 @@ def assess_doc_spec(kind: str, spec: dict) -> dict:
             return {"ok": False, "score": 0.2,
                     "reason": f"要点过于干瘪（{thin}/{len(bullets)}"
                               " 条不足 6 字）"}
-    elif kind in ("doc", "html"):
+    elif kind in ("doc", "pdf", "html"):
         secs = spec.get("sections")
         secs = [s for s in secs if isinstance(s, dict)] \
             if isinstance(secs, list) else []

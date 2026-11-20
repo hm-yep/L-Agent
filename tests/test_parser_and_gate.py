@@ -111,6 +111,13 @@ class TestQualityGate:
             {"title": "第二页", "bullets": ["这是第三条完整要点内容", "这是第四条完整要点内容"]},
         ]}
         assert assess_doc_spec("ppt", spec)["ok"] is True
+        pdf_spec = {"sections": [
+            {"heading": "摘要", "paragraphs": ["第一段完整内容", "第二段完整内容"]},
+            {"heading": "计划", "paragraphs": ["第三段完整内容"]},
+        ]}
+        assert assess_doc_spec("pdf", pdf_spec)["ok"] is True
+        assert assess_doc_spec(
+            "pdf", {"sections": pdf_spec["sections"][:1]})["ok"] is False
 
 
 class TestSearchParser:

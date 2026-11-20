@@ -29,21 +29,22 @@ from .typography import (FONT_STACK, MONO_STACK, SZ, WT, apply_qss_tokens,
 # ------------------------------------------------------------
 DARK = dict(
     # 表面层级：底 -> 卡片 -> 抬升 -> 更高，一共四档，不再随手加灰
-    BG="#14161A", SURFACE="#1A1D23", SURFACE2="#20242C", ELEVATED="#262B34",
-    BORDER="#2A2F38", BORDER_STRONG="#3A414C",
+    # 整体朝中性近黑收敛（对标 TraeCode 深色工具风），去掉偏蓝的底色
+    BG="#0F1115", SURFACE="#17191D", SURFACE2="#1E2024", ELEVATED="#24272E",
+    BORDER="#26292F", BORDER_STRONG="#343840",
     # 文字三档：主文 / 次要 / 说明
-    TEXT="#E8EBF0", TEXT2="#A2AAB7", TEXT3="#6D7583",
-    # 强调色只留一处克制的蓝
+    TEXT="#E6E6E6", TEXT2="#A0A4AB", TEXT3="#6B6F76",
+    # 强调色只留一处克制的蓝（代码 / 链接 / 主操作）
     ACCENT="#4F8CFF", ACCENT_HOVER="#6BA0FF", ACCENT_TEXT="#FFFFFF",
-    ACCENT_SOFT="#1E2739", ACCENT_LINE="#2E4368",
-    GOOD="#48B88A", WARN="#E0A03C", BAD="#E5645C", INFO="#4F8CFF",
-    HOVER="#22262F", PRESS="#2A2F3A", SELECTED="#243350",
+    ACCENT_SOFT="#1B2433", ACCENT_LINE="#2E4368",
+    GOOD="#4ADE80", WARN="#E0A03C", BAD="#F87171", INFO="#4F8CFF",
+    HOVER="#20242A", PRESS="#262B32", SELECTED="#1E2A40",
     # 左侧导航比主区更暗，形成「外壳 / 内容」的层次
-    NAV="#101216", NAV_TEXT="#B9C0CB", NAV_ACTIVE="#1C2129",
+    NAV="#0C0E11", NAV_TEXT="#B9C0CB", NAV_ACTIVE="#191D23",
     # 聊天气泡：我方=强调色低饱和底，对方=表面2
-    BUBBLE_ME="#22355B", BUBBLE_ME_TEXT="#DCE8FF", BUBBLE_ME_BORDER="#2F4874",
-    BUBBLE_AI="#20242C", BUBBLE_AI_TEXT="#E8EBF0", BUBBLE_AI_BORDER="#2A2F38",
-    CODE_BG="#181B20",
+    BUBBLE_ME="#1E2A40", BUBBLE_ME_TEXT="#DCE8FF", BUBBLE_ME_BORDER="#2F4874",
+    BUBBLE_AI="#1E2024", BUBBLE_AI_TEXT="#E6E6E6", BUBBLE_AI_BORDER="#26292F",
+    CODE_BG="#131519",
     # 浮层（桌宠侧气泡/输入条/历史面板/计划卡）
     FLOAT_BG="rgba(26, 29, 35, 238)", FLOAT_BG2="rgba(32, 36, 44, 242)",
     FLOAT_BORDER="rgba(255, 255, 255, 30)", FLOAT_TEXT="#E8EBF0",
@@ -195,16 +196,22 @@ QListWidget, QListView {
 QListWidget::item, QListView::item { border-radius: __RD_S__px; padding: 7px 9px; }
 QListWidget::item:hover, QListView::item:hover { background: __HOVER__; }
 QListWidget::item:selected, QListView::item:selected {
-    background: __ACCENT_SOFT__; color: __TEXT__; border: none;
+    background: __SELECTED__; color: __TEXT__; border: 1px solid __ACCENT_LINE__;
 }
 QTableWidget, QTableView {
     background: __SURFACE__; color: __TEXT__; border: 1px solid __BORDER__;
     border-radius: __RD_M__px; gridline-color: __BORDER__;
     font-size: __FS_SMALL__px; alternate-background-color: __TABLE_ALT__;
-    selection-background-color: __ACCENT_SOFT__; selection-color: __TEXT__;
+    selection-background-color: __SELECTED__; selection-color: __TEXT__;
     outline: none;
 }
 QTableWidget::item, QTableView::item { padding: 5px 7px; border: none; }
+QTableWidget::item:hover, QTableView::item:hover { background: __HOVER__; }
+QTableWidget::item:selected, QTableView::item:selected {
+    background: __SELECTED__;
+    border: 1px solid __ACCENT_LINE__;
+    color: __TEXT__;
+}
 QHeaderView::section {
     background: __TABLE_HEAD__; color: __TEXT2__; border: none;
     border-bottom: 1px solid __BORDER__; padding: 8px 7px;
@@ -302,16 +309,9 @@ QLabel#cardTitle { color: __TEXT__; font-size: __FS_LEAD__px; font-weight: __WT_
 QLabel#cardDesc { color: __TEXT2__; font-size: __FS_SMALL__px; }
 QLabel#emptyState { color: __TEXT3__; font-size: __FS_BODY__px; }
 QFrame#hline { background: __BORDER__; max-height: 1px; border: none; }
-QLabel#statChip {
-    color: __TEXT2__; background: __SURFACE2__; border: 1px solid __BORDER__;
-    border-radius: __RD_S__px; padding: 3px 9px; font-size: __FS_CAPTION__px;
-}
-QLabel#statChip[role="good"] { color: __GOOD__; border-color: __ACCENT_LINE__; }
-QLabel#statChip[role="bad"] { color: __BAD__; border-color: __BORDER_STRONG__; }
-QLabel#statChip[role="warn"] { color: __WARN__; border-color: __BORDER_STRONG__; }
 
 /* 关于页五个能力开关：点了真会翻 config 并落盘，所以要长成能按的样子
-   （实心底 + 悬停变色 + 手型光标），不能跟只读的 statChip 一个长相 */
+   （实心底 + 悬停变色 + 手型光标），不能跟普通说明文字一个长相 */
 QLabel#switchName {
     color: __TEXT__; font-size: __FS_SMALL__px; font-weight: __WT_MEDIUM__;
 }
@@ -396,6 +396,12 @@ QLabel#bubbleAi {
     padding: 9px 13px; font-size: __FS_BODY__px;
 }
 QLabel#bubbleMeta { color: __TEXT3__; font-size: __FS_MICRO__px; }
+/* 系统事件（文档已生成 / 提醒触发等）：弱化通栏提示，不占气泡、不抢对话注意力 */
+QLabel#systemNote {
+    color: __TEXT3__; font-size: __FS_CAPTION__px;
+    background: __SURFACE2__; border: 1px solid __BORDER__;
+    border-radius: __RD_S__px; padding: 4px 10px;
+}
 
 /* ============================================================
    桌宠侧浮层（objectName 沿用 ui_manager / input_dialog / plan_card）

@@ -41,6 +41,7 @@ _DOC_ALIASES = {
     "ppt": ("ppt", "pptx", "幻灯片", "演示文稿", "slides", "presentation"),
     "doc": ("doc", "docx", "word", "文档", "文章", "报告", "周报"),
     "xlsx": ("xlsx", "excel", "表格", "电子表格", "sheet", "spreadsheet"),
+    "pdf": ("pdf", "pdf文档", "pdf报告"),
     "html": ("html", "htm", "网页", "网页报告", "报告页", "web", "webpage"),
 }
 _VALID_DOC_TYPES = {v for group in _DOC_ALIASES.values() for v in group}
@@ -113,7 +114,7 @@ SPECS = {
     "cancel_shutdown": _spec("no_effect", idempotent=True),
     "create_doc": _spec("reversible", ("deliveries",), "delete_file",
                         params=["doc_type"],
-                        pre="doc_type 属于 ppt/doc/xlsx/html"),
+                        pre="doc_type 属于 ppt/doc/xlsx/pdf/html"),
     "see_screen": _spec("no_effect", idempotent=True),
     "remember": _spec("reversible", ("facts",), "forget_fact",
                       params=["fact"]),
@@ -304,7 +305,7 @@ def check_pre(action: dict, world: dict) -> list:
             dt = param("doc_type", "type", "类型", "文档类型", "kind")
             if dt and dt.lower() not in _VALID_DOC_TYPES:
                 problems.append(f"create_doc 的 doc_type={dt!r} 不在合法集合内"
-                                f"（应为 ppt/doc/xlsx/html 及其别名）")
+                                f"（应为 ppt/doc/xlsx/pdf/html 及其别名）")
     except Exception as e:  # noqa: BLE001 前置断言绝不把主流程带崩
         problems.append(f"前置校验自身异常（已降级）：{e}")
     return problems

@@ -360,6 +360,43 @@ def test_global_command_bar_present(fw_and_window):
     assert w._chat_input.text() == ""
 
 
+def test_web_page_shows_only_the_web_input(fw_and_window):
+    """「网页调试台」页里只留网页自己的输入框，工作台命令栏要收起来。
+
+    那一页嵌的就是浏览器里那份网页，网页自带输入框；底下再摆一条工作台
+    命令栏，同一屏两个输入框，主语说不清——用户不知道该往哪个里打字。
+    """
+    _fw, w, _path = fw_and_window
+    w.switch_page(page_index("web"))
+    assert w._cmd_bar.isHidden(), "网页调试台页不该再摆工作台命令栏"
+    # 网页那一侧确实自带输入框（HTML 里的输入区），不是空壳页面
+    html = (Path(__file__).resolve().parents[1] / "api" / "static"
+            / "index.html").read_text(encoding="utf-8")
+    assert "说点什么" in html, "网页台自己要有输入框替掉工作台那条"
+    w.switch_page(page_index("chat"))
+    assert not w._cmd_bar.isHidden(), "回到别的页面，命令栏要回来"
+
+
+def test_status_bar_keeps_only_feedback(fw_and_window):
+    """底部不再常驻指标芯片与模型状态，只留操作反馈那一行。
+
+    轮次 / 事件 / 失败率 / token / 偏好 / 规则 / 哈希链 与模型状态全部撤掉；
+    但菜单里的「复制运行状态摘要」要还能复制到同一份内容，不能跟着一起没了。
+    """
+    _fw, w, _path = fw_and_window
+    assert not [c for c in w.findChildren(QLabel)
+                if c.objectName() == "statChip"], "底部指标芯片不该再存在"
+    labels = [c.text() for c in w._status.findChildren(QLabel)]
+    assert not [t for t in labels
+                if t.startswith(("轮次", "事件", "失败率", "token", "偏好",
+                                  "生效规则", "哈希链"))]
+    assert not [t for t in labels if "微调" in t or "云端" in t], \
+        "模型状态文字不该再常驻在底部"
+    w._refresh_status()
+    assert "轮次" in w._status_full and "哈希链" in w._status_full, \
+        "复制运行状态摘要的内容要还在"
+
+
 def test_nav_groups_reflect_live_counts(fw_and_window):
     """左侧导航分组随真实数据刷新（任务 / 交付 / 偏好 / 规则）。"""
     fw, w, _path = fw_and_window

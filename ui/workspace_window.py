@@ -24,18 +24,19 @@
 
 import importlib.util
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 from PyQt5.QtCore import (
-    Qt, QSettings, QRect, QSize, QTimer, QUrl, pyqtSignal)
-from PyQt5.QtGui import QDesktopServices, QFontMetrics
+    Qt, QObject, QSettings, QRect, QSize, QTimer, QUrl, pyqtSignal, pyqtSlot)
+from PyQt5.QtGui import QDesktopServices, QFontMetrics, QTextDocument
 
-from .icons import icon
+from .icons import icon, icon_label
 from . import theme
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QFrame,
+    QAbstractItemView, QApplication, QButtonGroup, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStatusBar,
@@ -47,6 +48,58 @@ from framework.path_guard import describe_formats
 from framework.utils import app_data_dir, logger, plain_text
 
 VERSION = "v1.0.0"
+
+
+def _soft_break(text: str) -> str:
+    """在超长无空格串（文件路径 / URL / 长 ID）里插入零宽空格。
+
+    Qt 的 QLabel 换行只认单词边界（空格），一条没有空格的路径会被当成
+    一个整体单词，既不会换行、又超出气泡宽度，最后几个字被横向裁掉。
+    插零宽空格等于给这些长串制造合法的断行点，视觉上完全无痕。
+    """
+    return re.sub(r"[^\s]{41,}",
+                  lambda m: "\u200b".join(
+                      m.group(0)[i:i + 40]
+                      for i in range(0, len(m.group(0)), 40)),
+                  text)
+
+
+class _FilePickerBridge(QObject):
+    """网页「读本机文件」桥接到 Qt 原生文件选择框，拿完整路径。
+
+    浏览器出于安全拿不到本地文件的真实路径（只给 fakepath），而读本机
+    文件要走服务端的路径授权与解析，必须拿到完整路径；所以在内嵌的
+    QWebEngineView 里挂一个 QWebChannel 对象，网页点按钮时调它的 pick()
+    弹系统文件选择框，把选中文件的完整路径送回给网页。
+    """
+
+    def __init__(self, workspace):
+        super().__init__(workspace)
+        self._workspace = workspace
+
+    @pyqtSlot(result=str)
+    def pick(self) -> str:
+        path, _ = QFileDialog.getOpenFileName(
+            self._workspace, "选择要读取的本机文件", "", "所有文件 (*.*)")
+        return path or ""
+
+
+def _wrapped_text_height(font, text: str, width: int) -> int:
+    """精确测量文本在给定宽度下换行后的高度（像素）。
+
+    QFontMetrics.boundingRect 对含换行的多行文本会少算行间距——它逐行
+    用 ascent+descent 累加，而不是用 lineSpacing，行数一多误差就越滚越
+    大，长回复的最后几行会被气泡底边拦腰截断。QTextDocument 按行距逐行
+    排版，结果与 QLabel 实际渲染一致，是安全且准确的度量方式。
+    """
+    doc = QTextDocument()
+    doc.setDefaultFont(font)
+    doc.setDocumentMargin(0)
+    doc.setTextWidth(max(1, width))
+    doc.setPlainText(text)
+    return int(doc.size().height())
+
+
 # 开源项目没有在线更新通道，导航底部的按钮直接打开 releases 页看新版，
 # 而不是假装「检查更新」后毫无反应。
 REPO_RELEASES_URL = "https://github.com/hm-yep/L-Agent/releases"
@@ -151,6 +204,17 @@ class WorkspaceWindow(QMainWindow):
     settings_requested = pyqtSignal()
     quit_requested = pyqtSignal()
 
+    # ---- 附件图标分类后缀表（按 文件类型 自动换图标）----
+    ATT_IMAGE = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico"}
+    ATT_DOC = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+               ".txt", ".md", ".csv", ".rtf", ".wps"}
+    ATT_CODE = {".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".hpp",
+                ".go", ".rs", ".html", ".css", ".sql", ".json", ".yaml",
+                ".yml", ".sh", ".xml"}
+    ATT_ARCHIVE = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"}
+    ATT_AUDIO = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a"}
+    ATT_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"}
+
     def __init__(self, fw, parent=None, settings_path: str = None):
         super().__init__(parent)
         self.fw = fw
@@ -171,6 +235,9 @@ class WorkspaceWindow(QMainWindow):
         self._timeline_path = os.path.join(app_data_dir(), "timeline.html")
         # 记录「按钮 -> 图标名」，主题切换时统一重新着色（矢量图标随主题变色）
         self._icon_buttons = {}
+
+        # 附件列表内存缓存（文件 / 文件夹都放这里）
+        self._attached_files = []
 
         self._build_menu()
         self._build_ui()
@@ -206,7 +273,7 @@ class WorkspaceWindow(QMainWindow):
         edit_menu = bar.addMenu("编辑(&E)")
         act = edit_menu.addAction("切换深色 / 浅色主题")
         act.triggered.connect(self.toggle_theme)
-        act = edit_menu.addAction("复制状态栏文本")
+        act = edit_menu.addAction("复制运行状态摘要")
         act.triggered.connect(self._copy_status)
 
         win_menu = bar.addMenu("窗口(&W)")
@@ -264,7 +331,7 @@ class WorkspaceWindow(QMainWindow):
     def _copy_status(self):
         try:
             QApplication.clipboard().setText(self._status_full)
-            self._notify("状态栏文本已复制到剪贴板")
+            self._notify("运行状态摘要已复制到剪贴板")
         except Exception as e:      # noqa: BLE001
             self._notify("复制失败：%s" % e, ok=False)
 
@@ -326,7 +393,8 @@ class WorkspaceWindow(QMainWindow):
         hv.addWidget(self._stack)
         rv.addWidget(holder, 1)
 
-        rv.addWidget(self._build_command_bar())
+        self._cmd_bar = self._build_command_bar()
+        rv.addWidget(self._cmd_bar)
         rv.addWidget(self._build_status())
         root.addWidget(right, 1)
         self.setCentralWidget(central)
@@ -413,7 +481,7 @@ class WorkspaceWindow(QMainWindow):
         h = QHBoxLayout(foot)
         h.setContentsMargins(0, theme.SP["s"], 0, 0)
         h.setSpacing(theme.SP["s"])
-        note = QLabel("凌零 %s · 开源" % VERSION)
+        note = QLabel("凌零 %s" % VERSION)
         note.setObjectName("navGroupTitle")
         h.addWidget(note)
         h.addStretch(1)
@@ -482,19 +550,26 @@ class WorkspaceWindow(QMainWindow):
 
     # ---------------- 主区底部全局命令栏 ----------------
     def _build_command_bar(self) -> QWidget:
-        """单层命令栏：选文件按钮 + 大输入框 + 圆形发送按钮。
+        """命令栏：附件区（文件/文件夹卡片）+ 选文件 / 选文件夹按钮 + 输入框 + 发送。
 
-        之前这里抄了参考图的一排小控件（分支 / 访问级别 / 模型 / 麦克风 /
-        添加上下文），但它们在本项目里没有对应的真实能力，点了没反应、
-        是纯摆设，所以删了。「选文件」是例外：它真能接上——弹系统文件框，
-        把「读一下 "路径"」填进输入框，回车后走的是原有链路。手打路径
-        （尤其是带空格的）太麻烦，这个按钮解决的就是这一件事。
+        选文件 / 选文件夹都先挂到上方附件卡片上，不自动发送；回车发送时再把
+        附件路径拼进指令，仍走 模型 → path_guard → 授权卡，不绕过授权链。
         """
         bar = QWidget()
         bar.setObjectName("commandBar")
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(theme.SP["l"], 0, theme.SP["l"], theme.SP["m"])
-        outer.setSpacing(0)
+        outer.setSpacing(theme.SP["s"])
+
+        # 附件展示区：有附件才显示，空时整条隐藏
+        self._attachment_host = QWidget()
+        self._attachment_host.setObjectName("attachmentHost")
+        self._attachment_layout = QHBoxLayout(self._attachment_host)
+        self._attachment_layout.setContentsMargins(0, 0, 0, 0)
+        self._attachment_layout.setSpacing(theme.SP["s"])
+        self._attachment_layout.addStretch(1)
+        self._attachment_host.hide()
+        outer.addWidget(self._attachment_host)
 
         composer = QWidget()
         composer.setObjectName("composer")
@@ -503,25 +578,35 @@ class WorkspaceWindow(QMainWindow):
                               theme.SP["xs"])
         cv.setSpacing(theme.SP["s"])
 
-        # 「选择文件」：弹系统文件框，把指令填进输入框。
-        # 只填路径不读文件——回车后仍走 模型 → path_guard → 授权卡，
-        # 选文件不是绕过授权链的后门（真绕过去，「点同意」就白点了）。
+        # 「选择文件」：弹系统文件框，加入附件区（不自动发送）
         pick = QPushButton()
         pick.setObjectName("pickFile")
         pick.setIcon(icon("folder", theme.T("TEXT2", self._theme), 16))
         pick.setIconSize(QSize(16, 16))
         pick.setFixedSize(30, 30)
         pick.setCursor(Qt.PointingHandCursor)
-        pick.setToolTip("选择本机文件（自动填好指令，回车发送）")
+        pick.setToolTip("选择本机文件（加入附件，回车发送）")
         pick.clicked.connect(self._pick_file)
         self._icon_buttons[pick] = ("folder", "muted")
         cv.addWidget(pick, 0, Qt.AlignVCenter)
 
-        # 输入框：占位文案如实描述真实交互，不再写 @ / / 这类本项目没有的前缀语法
+        # 「选择文件夹」：弹系统目录框，加入附件区（不自动发送）
+        pick_dir = QPushButton()
+        pick_dir.setObjectName("pickDir")
+        pick_dir.setIcon(icon("open", theme.T("TEXT2", self._theme), 16))
+        pick_dir.setIconSize(QSize(16, 16))
+        pick_dir.setFixedSize(30, 30)
+        pick_dir.setCursor(Qt.PointingHandCursor)
+        pick_dir.setToolTip("选择本机文件夹（加入附件，回车发送）")
+        pick_dir.clicked.connect(self._pick_dir)
+        self._icon_buttons[pick_dir] = ("open", "muted")
+        cv.addWidget(pick_dir, 0, Qt.AlignVCenter)
+
+        # 输入框：占位文案如实描述真实交互
         self._chat_input = QLineEdit()
         self._chat_input.setObjectName("commandInput")
         self._chat_input.setPlaceholderText(
-            "今天帮你做些什么？点左边文件夹选文件，或直接说一句话；回车发送")
+            "今天帮你做些什么？点左边按钮加文件/文件夹附件，或直接说一句话；回车发送")
         self._chat_input.returnPressed.connect(self._send)
         self._chat_input.setFixedHeight(theme.DIM["composer_h"])
         cv.addWidget(self._chat_input, 1)
@@ -541,35 +626,24 @@ class WorkspaceWindow(QMainWindow):
         outer.addWidget(composer)
         return bar
 
-    _CHIP_DEFS = (("turns", "轮次"), ("events", "事件"), ("fail", "失败率"),
-                  ("tokens", "token"), ("prefs", "偏好"), ("rules", "规则"),
-                  ("chain", "哈希链"))
+    # 运行状态摘要的字段与顺序。底部不再常驻显示这些数字（见 _build_status），
+    # 菜单「复制运行状态摘要」按这份顺序拼出来，所以顺序与口径只有这一处。
+    _SUMMARY_FIELDS = (("turns", "轮次"), ("events", "事件"), ("fail", "失败率"),
+                       ("tokens", "token"), ("prefs", "偏好"), ("rules", "规则"),
+                       ("chain", "哈希链"))
 
     def _build_status(self) -> QStatusBar:
-        """左侧指标芯片 + 中间模型状态 + 右侧操作反馈。
+        """底部只留操作反馈。
 
-        原来七个数字挤成一条长文本，窗口一窄就被裁掉、也没法一眼扫到；
-        拆成芯片后每个指标各自成块，异常值还能单独标色。
+        这里原来常驻七个指标芯片（轮次 / 事件 / 失败率 / token / 偏好 / 规则 /
+        哈希链）和一段模型状态，窗口最下面一条永远是数字加模型名，看久了只剩
+        噪音；这些数字在「执行轨迹」页与「关于与设置」页都有出处，按需看更
+        合适。要把这份摘要发出去时用菜单「复制运行状态摘要」，那边算得出
+        同样的内容。
         """
         self._status = QStatusBar(self)
         self._status.setObjectName("statusBar")
         self._status.setSizeGripEnabled(False)
-
-        chips = QWidget()
-        ch = QHBoxLayout(chips)
-        ch.setContentsMargins(theme.SP["xs"], 0, 0, 0)
-        ch.setSpacing(theme.SP["xs"])
-        self._chips = {}
-        for key, label in self._CHIP_DEFS:
-            chip = QLabel("%s —" % label)
-            chip.setObjectName("statChip")
-            ch.addWidget(chip)
-            self._chips[key] = chip
-        self._status.addWidget(chips)
-
-        self._status_label = QLabel("就绪")
-        self._status_label.setProperty("role", "muted")
-        self._status.addWidget(self._status_label, 1)
 
         self._feedback = QLabel("")
         self._feedback.setObjectName("feedbackLabel")
@@ -645,6 +719,91 @@ class WorkspaceWindow(QMainWindow):
         t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         return t
 
+    # ---------------- 附件：分类图标 / 卡片 / 增删 ----------------
+    def _attachment_icon(self, path: str) -> str:
+        """根据路径类型返回矢量线框图标名（ui/icons.py），不再用彩色 emoji。"""
+        if os.path.isdir(path):
+            return "folder"
+        ext = Path(path).suffix.lower()
+        if ext in self.ATT_IMAGE:
+            return "image"
+        if ext in self.ATT_DOC:
+            return "file-text"
+        if ext in self.ATT_CODE:
+            return "code"
+        if ext in self.ATT_ARCHIVE:
+            return "archive"
+        if ext in self.ATT_AUDIO:
+            return "music"
+        if ext in self.ATT_VIDEO:
+            return "video"
+        return "file"
+
+    def _add_attachment(self, path: str):
+        """把一个文件 / 文件夹加入附件列表，并在上方生成可删除的卡片。"""
+        if not path:
+            return
+        if path in self._attached_files:
+            self._notify("该文件 / 文件夹已在附件列表中", ok=False)
+            return
+        self._attached_files.append(path)
+
+        card = QWidget()
+        card.setStyleSheet("""
+            QWidget {
+                background-color: rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            QLabel { border: none; color: #ddd; font-size: 12px; background: transparent; }
+            QPushButton { border: none; color: #888; font-weight: bold; font-size: 12px; background: transparent; }
+            QPushButton:hover { color: #ff5555; }
+        """)
+        h = QHBoxLayout(card)
+        h.setContentsMargins(8, 4, 4, 4)
+        h.setSpacing(6)
+
+        name = os.path.basename(path) or path
+        icon_lab = icon_label(self._attachment_icon(path), "#cbd5e1", 16)
+        icon_lab.setToolTip(path)
+        lab = QLabel(name)
+        lab.setToolTip(path)
+        h.addWidget(icon_lab)
+        h.addWidget(lab)
+
+        btn = QPushButton("✕")
+        btn.setFixedSize(16, 16)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda: self._remove_attachment(path, card))
+        h.addWidget(btn)
+
+        # 插到末尾弹簧之前
+        self._attachment_layout.insertWidget(
+            self._attachment_layout.count() - 1, card)
+        self._attachment_host.show()
+        self._chat_input.setFocus()
+        self._notify("已添加附件，可以输入指令后回车发送")
+
+    def _remove_attachment(self, path: str, widget: QWidget):
+        if path in self._attached_files:
+            self._attached_files.remove(path)
+        widget.hide()
+        widget.setParent(None)
+        widget.deleteLater()
+        if not self._attached_files:
+            self._attachment_host.hide()
+
+    def _clear_attachments(self):
+        """发送后清空附件列表与卡片 UI。"""
+        for i in reversed(range(self._attachment_layout.count())):
+            widget = self._attachment_layout.itemAt(i).widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        self._attached_files.clear()
+        self._attachment_host.hide()
+
     # ---------------- 页面：对话 ----------------
     def _build_chat_page(self, hint):
         page, v = self._page_shell(hint)
@@ -668,9 +827,22 @@ class WorkspaceWindow(QMainWindow):
 
     def _send(self):
         text = self._chat_input.text().strip()
-        if not text:
-            self._notify("先在底部写一句话再发送", ok=False)
+
+        # 没文字也没附件，不发送
+        if not text and not self._attached_files:
+            self._notify("先在底部写一句话或添加附件再发送", ok=False)
             return
+
+        # 拼接附件路径指令；只传附件没写字时给一句默认指令
+        if self._attached_files:
+            from . import file_picker
+            if not text:
+                text = "请帮我阅读并分析以下文件"
+            commands = [file_picker.compose_command(p)
+                        for p in self._attached_files]
+            text = text + "\n" + "\n".join(commands)
+            self._clear_attachments()
+
         self._chat_input.clear()
         self.fw.send_command(text)
         self.switch_page(0)
@@ -678,21 +850,21 @@ class WorkspaceWindow(QMainWindow):
         self._notify("已发送指令，正在等凌零回复")
 
     def _pick_file(self):
-        """弹系统文件框，把「读一下 "路径"」填进输入框（不自动发送）。
-
-        不自动发送是有意的：用户选完文件往往还要补一句「总结要点」，
-        直接发出去等于替他做了决定；而且读文件要过授权卡，节奏应该由人掌握。
-        """
+        """弹系统文件框，把选中文件加入附件区（不自动发送）。"""
         from . import file_picker
 
         path = file_picker.pick_file(self)
-        text = file_picker.compose_command(path) if path else ""
-        if not text:
+        if not path:
             return
-        self._chat_input.setText(text)
-        self._chat_input.setFocus()
-        self._chat_input.setCursorPosition(len(text))
-        self._notify("已选好文件，回车发送（可先在后面补一句要求）")
+        self._add_attachment(path)
+
+    def _pick_dir(self):
+        """弹系统目录框，把选中文件夹加入附件区（不自动发送）。"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择文件夹", os.path.expanduser("~"))
+        if not dir_path:
+            return
+        self._add_attachment(dir_path)
 
     def _confirm_new_conversation(self) -> bool:
         """清空对话记录前确认一次；单独成方法便于离屏测试替换。"""
@@ -801,13 +973,18 @@ class WorkspaceWindow(QMainWindow):
         meta_label.setObjectName("bubbleMeta")
         # 自己打的字原样显示；模型回复里的 <p> 是我们自己的排版约定，转成纯文本
         text = content if is_me else plain_text(content)
+        # 系统事件（文档已生成 / 提醒触发等）不占气泡，改走通栏弱化提示
+        if not is_me and text.startswith("[系统]"):
+            self._insert_system_note(text, ts)
+            return
+        text = _soft_break(text)
         bubble = QLabel(text)
         bubble.setTextFormat(Qt.PlainText)
         bubble.setObjectName("bubbleMe" if is_me else "bubbleAi")
         bubble.setWordWrap(True)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._bubble_rows.append((bubble, text))
-        self._fit_bubble(bubble, content)
+        self._fit_bubble(bubble, text)
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
@@ -817,6 +994,31 @@ class WorkspaceWindow(QMainWindow):
         container.setLayout(col)
         # 插到末尾弹簧之前
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, container)
+
+    def _insert_system_note(self, text: str, ts: float):
+        """系统事件用一条通栏弱化提示呈现，不占气泡、不抢对话注意力。
+
+        历史里连续写进多条「已生成文档 / 提醒触发」这类状态时，若每条都
+        当成气泡弹出来会非常吵；这里统一降成一条小号灰字、左对齐、可选中，
+        长文件路径也能靠零宽空格正常换行，不再被横向裁掉。
+        """
+        stamp = ("  ·  " + time.strftime("%m-%d %H:%M", time.localtime(ts))
+                 if ts else "")
+        body = _soft_break(text) + stamp
+        lab = QLabel(body)
+        lab.setObjectName("systemNote")
+        lab.setWordWrap(True)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 预留足够高度，避免首帧按单行高度布局、第二行被裁掉
+        lab.ensurePolished()
+        inner = max(120, self._bubble_max_w() - 24)
+        need_h = _wrapped_text_height(lab.font(), body, inner) + 12
+        lab.setMinimumHeight(need_h)
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(lab, 0, Qt.AlignLeft)
+        self._chat_layout.insertWidget(self._chat_layout.count() - 1, row)
 
     def _insert_evidence_card(self, ev: dict):
         """对话页里附一张卡：列了几项、读了几页、跳过什么、截断到多少字。"""
@@ -829,12 +1031,11 @@ class WorkspaceWindow(QMainWindow):
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
         # 和气泡同理：wordWrap 的 QLabel 在水平布局里 minimumSizeHint 很小，
         # 只给 maximumWidth 会被挤成一条窄列。这里按字体度量把宽高算死。
-        fm = QFontMetrics(lab.font())
+        lab.ensurePolished()
         width = min(620, self._bubble_max_w())
         pad_x = theme.DIM["bubble_pad_x"]
-        need_h = fm.boundingRect(
-            QRect(0, 0, max(80, width - pad_x * 2), 16777215),
-            Qt.TextWordWrap | Qt.AlignLeft, body).height()
+        need_h = _wrapped_text_height(lab.font(), body,
+                                      max(80, width - pad_x * 2))
         lab.setFixedSize(width, need_h + theme.DIM["bubble_pad_y"])
         row = QWidget()
         h = QHBoxLayout(row)
@@ -850,17 +1051,22 @@ class WorkspaceWindow(QMainWindow):
         高度也不能指望 heightForWidth——它传不过容器这层嵌套布局，实测
         两行的句子只给一行高，第二行被裁掉。
         """
+        bubble.ensurePolished()   # 让 QSS 的 font-size/padding 先生效，否则量的是默认字体
         fm = QFontMetrics(bubble.font())
         pad_x = theme.DIM["bubble_pad_x"]
         text_x = theme.DIM["bubble_text_x"]
+
+        # 给 natural 加上 18px 安全余量，防止不同 DPI 缩放、字体渲染引擎差异
+        # 导致中英文混排最后几个字被挤出 setFixedSize 边界。
         natural = fm.boundingRect(
             QRect(0, 0, 16777215, 16777215),
-            Qt.TextWordWrap | Qt.AlignLeft, text).width() + pad_x
+            Qt.TextWordWrap | Qt.AlignLeft, text).width() + pad_x + 18
+
         width = max(theme.SP["xxl"], min(natural, self._bubble_max_w()))
         inner = max(20, width - text_x)
-        lines = fm.boundingRect(
-            QRect(0, 0, inner, 16777215),
-            Qt.TextWordWrap | Qt.AlignLeft, text).height()
+        # 高度用 QTextDocument 精确测量：boundingRect 对多行文本少算行间距，
+        # 长回复最后几行会被气泡底边拦腰截断。
+        lines = _wrapped_text_height(bubble.font(), text, inner)
         bubble.setFixedSize(width, lines + theme.DIM["bubble_pad_y"])
 
     def _bubble_max_w(self) -> int:
@@ -936,8 +1142,6 @@ class WorkspaceWindow(QMainWindow):
                       len(p.get("evidence") or [])]
             for j, val in enumerate(values):
                 self._prefs_table.setItem(i, j, _cell(val))
-        self._set_empty_hint(self._prefs_table, len(items),
-                             "还没有学到偏好。说一句「我喜欢深色 PPT」试试。")
 
     def _delete_pref(self):
         key = self._selected_key(self._prefs_table)
@@ -988,8 +1192,6 @@ class WorkspaceWindow(QMainWindow):
                       r.get("successes", 0), r.get("failures", 0)]
             for j, val in enumerate(values):
                 self._rules_table.setItem(i, j, _cell(val))
-        self._set_empty_hint(self._rules_table, len(items),
-                             "还没有规则。同类问题出现两次后会自动归纳。")
 
     def _delete_rule(self):
         family = self._selected_key(self._rules_table)
@@ -1039,8 +1241,6 @@ class WorkspaceWindow(QMainWindow):
                       t.get("tokens", 0), t.get("duration_ms", 0)]
             for j, val in enumerate(values):
                 self._trace_table.setItem(i, j, _cell(val))
-        self._set_empty_hint(self._trace_table, len(turns),
-                             "还没有执行轨迹。发一句指令就会产生第一轮。")
         self._show_turn_detail()
 
     def _show_turn_detail(self):
@@ -1116,7 +1316,8 @@ class WorkspaceWindow(QMainWindow):
         self._delivery_list.itemDoubleClicked.connect(self._open_delivery)
         v.addWidget(self._delivery_list, 1)
         v.addWidget(self._button_row(
-            self._ghost("打开选中文件", self._open_delivery, "open")))
+            self._ghost("打开选中文件", self._open_delivery, "open"),
+            self._ghost("删除选中", self._delete_delivery, "trash")))
         return page, self._refresh_deliveries
 
     def _refresh_deliveries(self):
@@ -1128,9 +1329,6 @@ class WorkspaceWindow(QMainWindow):
             self._delivery_list.addItem(QListWidgetItem(
                 "%s  ·  %s  ·  %s" % (d.get("name", ""),
                                       d.get("kind", ""), ts)))
-        if not items:
-            self._delivery_list.addItem(QListWidgetItem(
-                "还没有交付物。让凌零做一份 PPT / Word / 表格就会出现在这里。"))
 
     def _open_delivery(self):
         row = self._delivery_list.currentRow()
@@ -1150,6 +1348,31 @@ class WorkspaceWindow(QMainWindow):
         else:
             self._notify("文件已不在原位置：%s" % (path or "未记录路径"),
                          ok=False)
+
+    def _delete_delivery(self):
+        """删除选中的交付记录（只从清单移除，不删磁盘上的文件）"""
+        row = self._delivery_list.currentRow()
+        items = list(getattr(self.fw.tasks, "deliveries", []) or [])
+        if not items or row < 0:
+            self._notify("请先在列表里选中一份交付", ok=False)
+            return
+        # 列表倒序展示，第 row 行对应原始列表倒数第 row 条；remove_delivery 用 1 起始
+        idx = len(items) - row
+        if not 1 <= idx <= len(items):
+            self._notify("这条交付记录已失效，请点顶栏「刷新本页」", ok=False)
+            return
+        d = items[idx - 1]
+        name = d.get("name", "")
+        path = d.get("path", "")
+        if not self._confirm("删除交付", "确定删除交付记录「%s」？" % name,
+                             "只从清单移除记录，不会删除磁盘上的文件"
+                             + ("（%s）" % path if path else "")):
+            self._notify("已取消，未删除")
+            return
+        removed = self.fw.tasks.remove_delivery(idx)
+        self._refresh_deliveries()
+        self._notify("已删除交付记录「%s」" % name if removed
+                     else "没有删掉任何交付，请刷新后重试", ok=bool(removed))
 
     # ---------------- 页面：本机访问（本次会话授权） ----------------
     def _build_grants_page(self, hint):
@@ -1292,10 +1515,26 @@ class WorkspaceWindow(QMainWindow):
         self._web_timer = QTimer(self)
         self._web_timer.setSingleShot(True)
         self._web_timer.timeout.connect(self._retry_web_view)
+        # 打开工作台自动拉起网页台：单次子定时器，随窗口销毁，不卡开窗。
+        self._web_autostarted = False
+        self._autostart_timer = QTimer(self)
+        self._autostart_timer.setSingleShot(True)
+        self._autostart_timer.timeout.connect(self._start_web_service)
         return page, self._refresh_web
 
+    def _auto_start_web(self):
+        """打开工作台后自动拉起本地网页台，不用用户手动点「启动本地服务」。
+
+        延迟到窗口显示之后再起服务：不卡开窗；用子定时器，随窗口一起销毁，
+        不会像 QTimer.singleShot 那样窗口关了还回调到已销毁控件。只自动一次。
+        """
+        if self._web_autostarted:
+            return
+        self._web_autostarted = True
+        self._autostart_timer.start(400)
+
     def _start_web_service(self):
-        """用户明确点了才起本地服务；不偷偷在切页时拉起后台进程。"""
+        """起本地服务并开始重试初始化内嵌浏览器（手动点按钮或自动拉起共用）。"""
         from framework.api_service import api_alive, start_api_in_thread
 
         self._web_start_btn.hide()
@@ -1362,6 +1601,7 @@ class WorkspaceWindow(QMainWindow):
             view.setObjectName("webView")
             view.urlChanged.connect(self._on_web_url_changed)
             self._web_host.layout().addWidget(view)
+            self._wire_web_channel(view)
             view.setUrl(QUrl(self._web_base + "/"))
         except Exception as exc:      # noqa: BLE001
             # 这个函数是页面切换信号里调的，槽里的未捕获异常会被 PyQt 直接
@@ -1375,6 +1615,20 @@ class WorkspaceWindow(QMainWindow):
         self._web_timer.stop()
         self._web_placeholder.hide()
         self._notify("网页台已内嵌：与浏览器访问的是同一份网页")
+
+    def _wire_web_channel(self, view):
+        """给内嵌网页挂 QWebChannel，让「读本机文件」弹 Qt 原生选择框。
+
+        失败（没装 QtWebChannel 之类）不算错：网页端会自动退回「手动填
+        完整路径」的旧入口，不影响其它能力。
+        """
+        try:
+            from PyQt5.QtWebChannel import QWebChannel
+            channel = QWebChannel(view.page())
+            channel.registerObject("filePicker", _FilePickerBridge(self))
+            view.page().setWebChannel(channel)
+        except Exception as exc:      # noqa: BLE001
+            logger.debug("[Workspace] 网页文件选择桥不可用: %s" % exc)
 
     def _on_web_url_changed(self, _url=None):
         """网页每次导航后把当前主题带过去，避免工作台深色/网页浅色打架。"""
@@ -1621,6 +1875,7 @@ class WorkspaceWindow(QMainWindow):
         # 网页台的重试链也得停：窗口都关了还在等「服务起来没有」没有意义，
         # 回调打在一个已 hide/待销毁的窗口上只会出事。
         self._web_timer.stop()
+        self._autostart_timer.stop()
 
     def switch_page(self, index: int):
         index = max(0, min(index, len(PAGE_DEFS) - 1))
@@ -1638,6 +1893,10 @@ class WorkspaceWindow(QMainWindow):
             self._nav_group.setExclusive(True)
         self._title.setText(PAGE_DEFS[index][1])
         self._page_hint.setText(PAGE_DEFS[index][2])
+        # 「网页调试台」那一页里嵌的就是完整网页，网页自己带输入框；再摆一条
+        # 工作台命令栏就是两个输入框摆在同一屏，谁是主语说不清。那一页只留
+        # 网页那一个，回到别的页面命令栏照旧在。
+        self._cmd_bar.setVisible(PAGE_DEFS[index][0] != "web")
         self.refresh_current()
 
     def refresh_current(self):
@@ -1647,13 +1906,6 @@ class WorkspaceWindow(QMainWindow):
         except Exception as e:      # noqa: BLE001 单个页面异常不拖垮整个窗口
             logger.warning(f"[Workspace] 刷新 {key} 页失败: {e}")
         self._refresh_status()
-
-    def _set_chip(self, key: str, text: str, role: str = ""):
-        chip = self._chips[key]
-        chip.setText(text)
-        if chip.property("role") != role:
-            chip.setProperty("role", role)
-            _repolish(chip)
 
     def _refresh_status(self):
         traj = getattr(self.fw, "trajectory", None)
@@ -1669,23 +1921,29 @@ class WorkspaceWindow(QMainWindow):
         n_deliv = len(getattr(getattr(self.fw, "tasks", None), "deliveries", []) or [])
 
         fail = s["failure_rate"] * 100
-        self._set_chip("turns", "轮次 %d" % s["turns"])
-        self._set_chip("events", "事件 %d" % s["events"])
-        self._set_chip("fail", "失败率 %.1f%%" % fail,
-                       "bad" if fail >= 20 else ("warn" if fail > 0 else ""))
-        self._set_chip("tokens", "token %d" % s["tokens"])
-        self._set_chip("prefs", "偏好 %d" % n_prefs)
-        self._set_chip("rules", "生效规则 %d" % n_rules)
-        self._set_chip("chain", "哈希链 %s" % ("完整" if s["chain_ok"] else "断开"),
-                       "good" if s["chain_ok"] else "bad")
-
+        # 底部不再常驻这些数字（见 _build_status），但「复制运行状态摘要」要能
+        # 复制到同一份内容，所以这里照旧算一遍，只是没有控件显示它。
+        values = {
+            "turns": "轮次 %d" % s["turns"],
+            "events": "事件 %d" % s["events"],
+            "fail": "失败率 %.1f%%" % fail,
+            "tokens": "token %d" % s["tokens"],
+            "prefs": "偏好 %d" % n_prefs,
+            "rules": "生效规则 %d" % n_rules,
+            "chain": "哈希链 %s" % ("完整" if s["chain_ok"] else "断开"),
+        }
         ai = (self.fw.ai_status_text()
               if hasattr(self.fw, "ai_status_text") else "")
-        self._status_label.setText(ai)
-        self._status_full = "%s  ·  %s" % (
-            "  ·  ".join(c.text() for c in self._chips.values()), ai)
+        self._status_full = "  ·  ".join(
+            [values[key] for key, _label in self._SUMMARY_FIELDS]
+            + ([ai] if ai else []))
         n_grants = len(self._grant_entries())
-        self._nav_grants_btn.setText("  本机访问：放开 %d 条" % n_grants)
+
+        # 【修复】：更新按钮文字时，同步更新 ToolTip 防止字数过多被截断
+        btn_text = "  本机访问：放开 %d 条" % n_grants
+        self._nav_grants_btn.setText(btn_text)
+        self._nav_grants_btn.setToolTip("点击查看本机访问详情，当前放开了 %d 条路径" % n_grants)
+
         self._nav_groups.setText(
             "任务：待办 %d 项\n交付：已生成 %d 份\n偏好：%d 条 · 生效规则：%d 条"
             "\n本机访问：放开 %d 条"
@@ -1736,7 +1994,7 @@ class WorkspaceWindow(QMainWindow):
         self._notify("窗口已%s" % ("最大化" if self._max_state else "还原"))
 
     def open_workspace(self):
-        """从桌宠/托盘点开：首次按记住的偏好自动最大化。"""
+        """从桌宠/托点开：首次按记住的偏好自动最大化。"""
         self.show()
         if self._first_open:
             self._first_open = False
@@ -1744,6 +2002,7 @@ class WorkspaceWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.refresh_current()
+        self._auto_start_web()
 
     def hide_to_pet(self):
         self.save_state()

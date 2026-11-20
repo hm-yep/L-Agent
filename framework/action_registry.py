@@ -40,7 +40,7 @@ ACTION_SPECS = {
     "cancel_shutdown": {"params": [],     "effect": "no_effect", "skill": False, "desc": "取消待执行的关机"},
     # ---- 文档工厂 ----
     "create_doc":   {"params": ["doc_type"], "effect": "reversible", "skill": False,
-                     "desc": "生成 PPT/Word/Excel/网页报告"},
+                     "desc": "生成 PPT/Word/Excel/PDF/网页报告"},
     # ---- 视觉 / 记忆 / 规划 ----
     "see_screen":   {"params": [],        "effect": "no_effect", "skill": False, "desc": "看屏幕并回答"},
     "remember":     {"params": ["fact"],  "effect": "reversible","skill": True,  "desc": "记一条长期记忆"},

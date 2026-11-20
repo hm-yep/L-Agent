@@ -152,7 +152,7 @@ def test_check_pre_text_required():
 
 
 def test_check_pre_create_doc_type():
-    for good in ("ppt", "word", "xlsx", "网页"):
+    for good in ("ppt", "word", "xlsx", "pdf", "网页"):
         assert effect_spec.check_pre(
             {"action": "create_doc", "doc_type": good}, {}) == [], good
     problems = effect_spec.check_pre(

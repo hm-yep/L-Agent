@@ -88,7 +88,7 @@ PROMPT_ACTION_POOL = """【动作池】
 12. {"action":"restart","delay":"延时秒数(可选,默认60)"}    定时重启
 13. {"action":"lock"}                        立即锁定屏幕（等同 Win+L）
 14. {"action":"cancel_shutdown"}             取消已排定的关机/重启
-15. {"action":"create_doc","doc_type":"ppt、doc、xlsx 或 html","filename":"文件名.扩展名","content":{...}}
+15. {"action":"create_doc","doc_type":"ppt、doc、xlsx、pdf 或 html","filename":"文件名.扩展名","content":{...}}
     制作文档，由程序弹出保存对话框让用户选位置（html 生成后自动用浏览器打开）。content 结构按类型：
     ppt : {"title":"演示标题","subtitle":"副标题(可省)","template":"模板名(可省)",
            "slides":[{"title":"页标题","bullets":["要点1","要点2"],
@@ -99,6 +99,8 @@ PROMPT_ACTION_POOL = """【动作池】
     headers 是表头数组，rows 是行数组（每行一个数组，数字直接写数字），
     一页表格别超过 8 行；要点和表格可以同页；结尾致谢页程序会自动生成，不用自己写。
     doc : {"title":"文档标题","sections":[{"heading":"章节标题","paragraphs":["段落"],"table":{"headers":["列"],"rows":[["单元格"]]}}]}
+    pdf : {"title":"PDF标题","subtitle":"副标题(可省)","sections":[{"heading":"章节标题","paragraphs":["段落"],"table":{"headers":["列"],"rows":[["单元格"]]}}]}
+          结构与 doc 相同，生成带可复制文字层的中文 PDF，支持保存到桌面等指定位置
     xlsx: {"sheets":[{"name":"工作表名","headers":["列头1","列头2"],"rows":[["行数据1","行数据2"]]}]}
     html: {"title":"网页标题","subtitle":"副标题(可省)","sections":[{"heading":"章节标题","paragraphs":["要点或段落"],"table":{"headers":["列"],"rows":[["单元格"]]}}]}
           适合图文并茂的调研报告/汇报页，结构与 doc 相同、展示更像网页
@@ -182,6 +184,9 @@ PROMPT_RULES = """【重要规则】
   标准序列：show_bubble 确认 + create_doc。
 - 用户说"写个文档""写份报告""写篇文章"：【必须】带上 create_doc 动作（doc_type 填 "doc"），
   content 里分章节给段落，需要数据时可在章节里附 table。
+- 用户说"生成PDF""写份PDF报告""把以上内容做成PDF"：【必须】带上 create_doc 动作
+  （doc_type 填 "pdf"，filename 以 .pdf 结尾），content 与 doc 同构，分章节给完整段落，
+  需要数据时在章节里附 table；用户说保存到桌面时另加 "location":"desktop"。
 - 用户说"生成表格""做个Excel""整理个名单"：【必须】带上 create_doc 动作（doc_type 填 "xlsx"），
   content 里给表头和行数据，数字字段直接写数字或数字字符串。
 - create_doc 的 filename 只填文件名（如"学习计划.pptx"），保存位置由程序弹窗让用户选，
@@ -246,7 +251,15 @@ PROMPT_RULES = """【重要规则】
   清单括号里标了需要哪些参数而用户没说，就先 show_bubble 问一句，别猜。
 - 除此之外的一切问题（"讲个笑话""1+1等于几""帮我解这道方程""今天心情不好""讲讲相对论"）：
   你直接用自己的知识回答，用 show_bubble 输出完整答案。禁止回复"我只会这些指令""无法回答"这类话。
-- 讲数学题/写代码题时：text 里写清楚步骤，控制在 120 字以内，优先给结论再给简要过程
+- 【回答质量】知识问答、讲解、分析、建议类回复必须详细细致，不要一句话带过：
+  先给结论，再分点展开背景、原因、步骤或依据，能举例就举例；涉及概念先解释清楚再往下讲；
+  用户明显在求解释、求分析、求教程时，宁可多讲也要讲透，宁详勿略。
+  分点时每一条都要有实质内容（至少一句解释或一个例子），禁止只摆几个名词/标题就结束。
+  即使用户说"简单说""言简意赅"，也只是要求"精炼不啰嗦"，不是"空洞"：仍要先一句话
+  点结论，再对每个关键点给一句必要的解释或例子，保证信息完整、可落地。
+  只有工具操作的确认语（"遵命，这就打开""已记入待办"）才保持简短，不适用本条。
+- 讲数学题/写代码题时：text 里写清完整推导与解题步骤，先给结论、再逐步展开，
+  每一步说明依据和为什么，关键公式/变量讲清楚，不要只甩一个答案。
 - 讲笑话时：直接讲一个具体笑话，不要说"这是一个笑话"
 - 你的性格：{personality}
 - 说话风格必须像一位骑士：干脆利落、言出必行、有担当（例如"遵命""这就去办""任务完成""交给我"），
@@ -266,7 +279,8 @@ class AIWorker(QThread):
 
     def __init__(self, message: str, history: list, personality: str,
                  parent=None, facts: str = "", notes: str = "",
-                 skills: str = "", prefs_text: str = ""):
+                 skills: str = "", prefs_text: str = "",
+                 allow_lora: bool = True):
         super().__init__(parent)
         self.message = message
         self.history = history
@@ -277,6 +291,10 @@ class AIWorker(QThread):
         # 自动学到的用户偏好（不是用户显式说「记住」的那份），作为动态块
         # 追加在系统提示词之后；SYSTEM_PROMPT 常量本身保持逐字不变。
         self.prefs_text = (prefs_text or "").strip()
+        # 这一轮允不允许问本地微调。计划执行/重规划轮传 False：本地适配器
+        # 的训练集是单指令样本，越界的计划提示下它会退化成背诵训练动作
+        # （实测只会回一个 jump），那动作合协议却推进不了计划。
+        self.allow_lora = allow_lora
         # 这一轮实际是谁答的：lora / cloud / offline。工作台气泡据此标来源，
         # 用户才知道这句话出自本地模型还是云端。
         self.provider_used = ""
@@ -356,13 +374,22 @@ class AIWorker(QThread):
         顺序是「本地优先」：用户显式开了本地微调，就先问本地；本地不可用
         （缺依赖 / 缺权重 / 答得不合协议）时如实往下退，而不是拿一个
         半生不熟的结果糊弄过去。云端也没有配置 Key 时，再退到离线规则。
+
+        allow_lora=False 的轮次（计划执行 / 重规划）直接问云端：本地适配器
+        见过的是 41 条单指令样本，喂它越界的计划提示，它会背诵训练里的动作
+        （实测只回一个 jump）。那动作合协议，所以协议检查放行；可它推不动
+        计划，计划就原地打转——这种「合协议但没用」不能靠协议检查拦。
         """
         if config.LORA_ENABLED:
-            actions = self._request_lora()
-            if actions:
-                self.provider_used = "lora"
-                return actions
-            logger.warning("[AI] 本地微调通路没给出可用结果，改走云端模型")
+            if not self.allow_lora:
+                logger.info("[AI] 本轮不用本地微调（计划语义不在训练集射程内），"
+                            "直接问云端模型")
+            else:
+                actions = self._request_lora()
+                if actions:
+                    self.provider_used = "lora"
+                    return actions
+                logger.warning("[AI] 本地微调通路没给出可用结果，改走云端模型")
         return self._request_deepseek()
 
     def _request_lora(self):
@@ -711,7 +738,7 @@ _SHOT_WORDS = ("截图", "截个图", "截张图", "截屏", "屏幕快照")
 # 文档生成意图关键词：整份 PPT/文档的内容远超普通回复的长度，
 # 命中这些词时本次请求的 max_tokens 下限提到 4096，防止 JSON 被截断
 _DOC_HINT_WORDS = ("ppt", "幻灯片", "演示文稿", "word", "文档", "报告",
-                   "excel", "表格", "名单", "报表")
+                   "pdf", "excel", "表格", "名单", "报表")
 
 
 def is_doc_request(message: str) -> bool:
@@ -1151,6 +1178,27 @@ def mock_ai(message: str, personality: str) -> list:
                               "bullets": ["全年营收有望突破 1500 万，同比增长 35% 以上",
                                           "交付周期缩短一半，客户满意度回升至 95%",
                                           "形成可复制的区域打法，为明年扩张打底"]},
+                         ]}},
+        ]
+    if "pdf" in low:
+        return [
+            {"action": "show_bubble",
+             "text": f"遵命，PDF 文档这就生成{tail}（离线示例内容）"},
+            {"action": "create_doc", "doc_type": "pdf",
+             "filename": "项目报告.pdf",
+             **{k: v for k, v in _doc_extra.items() if v},
+             "content": {"title": "项目报告（离线示例）",
+                         "subtitle": "凌零 · 桌面AI助手 出品",
+                         "sections": [
+                             {"heading": "项目背景",
+                              "paragraphs": ["这是离线模式生成的 PDF 示例文档。",
+                                             "联网后凌零可以按你的要求撰写完整内容。"]},
+                             {"heading": "进展与计划",
+                              "paragraphs": ["核心功能已经完成，当前进入验收阶段。",
+                                             "下一步将核对交付内容并补齐测试记录。"],
+                              "table": {"headers": ["事项", "状态"],
+                                        "rows": [["功能开发", "已完成"],
+                                                 ["测试验收", "进行中"]]}},
                          ]}},
         ]
     if "html" in low or "网页" in text:

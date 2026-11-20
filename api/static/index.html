@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>凌零 · 智能体服务</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* ============================================================
      设计令牌：与 ui/theme.py 的 DARK / LIGHT 同一组色值。
@@ -161,9 +162,9 @@
   <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
 </svg>
-<header>
-  <h1>凌零 · 智能体服务</h1>
-  <p>网页调试台 · 按钮可用性由服务端真实能力决定</p>
+<!-- 能力状态栏 + 令牌输入已隐藏：工作台内嵌时这排属于重复信息，挡视野。
+     保留 DOM 让 loadCapabilities/authHeaders 仍能读取令牌与能力，只收起视觉。 -->
+<header style="display:none">
   <div class="cap-bar">
     <span id="capLlm" class="cap">模型 Key：检测中…</span>
     <span id="capRag" class="cap">知识库：检测中…</span>
@@ -229,6 +230,15 @@ const input = document.getElementById('input');
 const send = document.getElementById('send');
 const recordBtn = document.getElementById('record');
 let sid = null;
+
+// 内嵌在工作台时，通过 QWebChannel 拿到 Qt 的文件选择桥：读本机文件
+// 直接弹系统文件选择框拿完整路径；外部浏览器打开没有这个桥，退回手动填路径。
+window.filePicker = null;
+if (window.qt && window.qt.webChannelTransport && window.QWebChannel) {
+  new QWebChannel(qt.webChannelTransport, function (channel) {
+    window.filePicker = channel.objects.filePicker;
+  });
+}
 
 // ---- 服务端能力检测：/health 是唯一真源 ----
 // 以前所有按钮一上来都可点，但默认装法（只装 requirements-api.txt、无 Key）
@@ -501,11 +511,18 @@ input.addEventListener('keydown', e => {
   }
 });
 
-// 「读本机文件」：输入框里填完整路径，走同一个 /chat，只是多带 read_path。
+// 「读本机文件」：内嵌工作台时弹 Qt 原生文件选择框拿完整路径；外部浏览器退回手动填路径
 document.getElementById('readFileBtn').onclick = () => {
+  if (!llmReady()) { hint('模型 Key 未配置，暂时不能解读本机文件', false); return; }
+  if (window.filePicker) {
+    window.filePicker.pick(function (path) {
+      if (!path) return;           // 用户取消选择
+      sendMsg('', path);
+    });
+    return;
+  }
   const path = input.value.trim();
   if (!path) { hint('先在输入框里粘贴完整文件路径，再点「读本机文件」', false); return; }
-  if (!llmReady()) { hint('模型 Key 未配置，暂时不能解读本机文件', false); return; }
   sendMsg('', path);
 };
 

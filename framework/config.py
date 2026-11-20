@@ -20,7 +20,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 AI_TIMEOUT = 90              # AI 请求超时（秒；长回答/慢网关需要充裕时间）
 AI_MAX_RETRIES = 2           # 请求失败自动重试次数（网络抖动/限流/截断）
-AI_MAX_TOKENS = 1024         # 单次回复最大 token（被截断时会自动放大重试）
+AI_MAX_TOKENS = 2048         # 单次回复最大 token（被截断时会自动放大重试）
 
 # 可选择的模型种类（设置界面下拉框 + 可手动输入）
 DEEPSEEK_MODELS = [
@@ -167,17 +167,20 @@ PERSONALITIES = {
     "活泼": {
         "move_speed": 1.6,        # 移动速度倍率
         "action_rate": 1.5,       # 动作频繁度倍率
-        "chat_style": "你性情豪爽，像冲锋在前的年轻骑士，回复干脆有力、行动果断，回复控制在40字以内。",
+        "chat_style": "你性情豪爽，像冲锋在前的年轻骑士，回复干脆有力、行动果断；"
+                      "但回答问题要详细、细致、结构清晰，把来龙去脉讲透，不要三言两语打发。",
     },
     "沉稳": {
         "move_speed": 0.7,
         "action_rate": 0.7,
-        "chat_style": "你像久经沙场的老骑士，话少而精炼，言出必行，回复简洁平静，一般不超过25字。",
+        "chat_style": "你像久经沙场的老骑士，言出必行、沉着可靠；"
+                      "回答要全面、严谨、条理分明，把背景、原因、步骤和结论都交代清楚。",
     },
     "毒舌": {
         "move_speed": 1.0,
         "action_rate": 1.0,
-        "chat_style": "你像爱吐槽的骑士副官，嘴上不饶人但关键时刻必定出手相助，回复带幽默和调侃，回复控制在45字以内。",
+        "chat_style": "你像爱吐槽的骑士副官，嘴上不饶人但关键时刻必定出手相助，回复带幽默和调侃；"
+                      "但内容照样要详细到位、有理有据，不因吐槽而糊弄正事。",
     },
 }
 DEFAULT_PERSONALITY = "活泼"
@@ -271,6 +274,8 @@ MAX_WORKLOG = 300                 # 工作日志条数上限（超出丢最老�
 # 任务计划确认流（show_plan 出计划 -> 用户确认 -> 逐步执行）
 PLAN_MAX_ROUNDS = 15              # 确认后自动推进的最大轮数（安全阀，防死循环）
 PLAN_MAX_REPLANS = 2              # 步骤受阻时自动重规划的次数上限（防循环重试）
+PLAN_NO_PROGRESS_ROUNDS = 2       # 连续几轮「跑了动作但一步没推进」就算步骤受阻，
+                                   # 走重规划；不再把轮次预算耗光让计划原地打转
 PLAN_CANCEL_WORDS = ("取消计划", "放弃计划", "不要计划", "停止计划",
                      "计划取消", "别做了", "先不做了")
 PLAN_CONFIRM_WORDS = ("确认", "开始执行", "执行吧", "开始吧", "没问题",
@@ -283,7 +288,7 @@ PLAN_CONFIRM_WORDS = ("确认", "开始执行", "执行吧", "开始吧", "没�
 UNDO_ENABLED = True             # 总开关：False 时不记账，undo_last 如实说没记
 UNDO_DELETE_FILES = True        # 允许回退时删掉本轮自己生成的文档/图表
 UNDO_DELETE_MAX_BYTES = 50 * 1024 * 1024   # 只删不超过这个大小的本轮新文件
-UNDO_FILE_EXTS = (".pptx", ".docx", ".xlsx", ".png", ".jpg", ".jpeg", ".html")
+UNDO_FILE_EXTS = (".pptx", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".html")
 UNDO_MAX_ITEMS = 20             # 一次最多回退几项（超出交还用户手工处理）
 # 短指令直连：这几句话不经过模型当场执行（API 欠费时照样能撤销、能存技能）
 SHORT_CMD_MAX_LEN = 14          # 超过这个长度就不算"一句指令"，交回模型当任务

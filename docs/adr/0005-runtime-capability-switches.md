@@ -68,6 +68,8 @@ EVOLUTION_ENABLED   → self.rules       (framework.evolution.RuleStore)
 
 读只读的胶囊 `QLabel#statChip` 与真按钮 `QPushButton#switchToggle` 是两套样式：后者有实心底、`hover`/`pressed` 变色、`min-width: 62px`、手型光标，开启=绿（`role="good"`）/关闭=红（`role="bad"`）。样式仍只由 `ui/theme.py` 下发（全仓只允许它调 `setStyleSheet`，这条已有测试钉住）。
 
+（2026-11-20 补记：`statChip` 这套胶囊样式后来随工作台底部的常驻指标一起撤掉了，只剩 `switchToggle` 在用——见 [ADR 0011 工作台底栏收敛](0011-workbench-bottom-bar.md)。「开关必须是可按的真按钮」这条结论不变。）
+
 ## 怎么证明
 
 | 层次 | 手段 | 断言 |
