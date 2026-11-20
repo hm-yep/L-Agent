@@ -242,7 +242,13 @@ def test_card_closed_without_click_is_one_deny(chain):
     _APP.processEvents()
     assert events == [(gid, DECISION_DENY)], events
     assert fw._grant_cards == {}, "关掉的卡必须从登记里摘掉"
-    assert fw._action_queue == [keep], fw._action_queue
+    # 关卡之后 keep 不能被吞掉。它有两种合法落点：还在队列里等着，或已经
+    # 在同一轮事件循环里跑完。原先这里写死 `_action_queue == [keep]`，等于
+    # 规定「closeEvent 之后不得继续推进队列」——那是时序细节，不是产品语义，
+    # 全量跑时前面用例留下的 pending 定时器会让队列提前被消费，于是假红。
+    ran = any("关卡之后也要跑" in b for b in bubbles)
+    assert fw._action_queue == [keep] or ran, \
+        "关掉卡片不能吞掉后面的动作：队列=%r 气泡=%r" % (fw._action_queue, bubbles)
 
 
 def test_timeout_is_reported_as_timeout_not_as_user_refusal(chain):
