@@ -135,7 +135,7 @@ def main():
     Path(cfg["output_dir"]).mkdir(parents=True, exist_ok=True)
 
     # transformers 5.x 移除了 warmup_ratio，只认 warmup_steps。这里按总步数
-    # 折算：31 条样本、batch 2 × 累积 4 时每轮 4 步，比例才落得到实处。
+    # 折算：41 条样本、batch 2 × 累积 4 时每轮 6 步，比例才落得到实处。
     steps_per_epoch = max(1, math.ceil(
         len(dataset) / (cfg["batch_size"] * cfg["grad_accum"])))
     total_steps = steps_per_epoch * cfg["num_epochs"]

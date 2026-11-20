@@ -1,0 +1,10 @@
+{"instruction": "用户说：帮我打开计算器。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"这就打开。\"},{\"action\":\"open_app\",\"app\":\"计算器\"},{\"action\":\"jump\"}]"}
+{"instruction": "用户说：帮我截个图。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"好，截图。\"},{\"action\":\"screenshot\"}]"}
+{"instruction": "用户说：把音量调到60。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"音量调到60。\"},{\"action\":\"set_volume\",\"volume\":\"60\"}]"}
+{"instruction": "用户说：5分钟后提醒我吃药。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"好，5分钟后提醒你吃药。\"},{\"action\":\"remind\",\"text\":\"吃药\",\"seconds\":300}]"}
+{"instruction": "用户说：查一下今天的热点新闻。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"我搜一下。\"},{\"action\":\"web_search\",\"query\":\"今天的热点新闻\",\"count\":5}]"}
+{"instruction": "用户说：帮我锁一下电脑。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"这就锁屏。\"},{\"action\":\"lock\"}]"}
+{"instruction": "用户说：取消刚才的关机。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"已取消关机。\"},{\"action\":\"cancel_shutdown\"}]"}
+{"instruction": "用户说：把待办清单打开看看。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"这是你的待办。\"},{\"action\":\"todo_list\"}]"}
+{"instruction": "用户说：记住我喜欢喝美式。", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"记住了。\"},{\"action\":\"remember\",\"fact\":\"用户喜欢喝美式\"}]"}
+{"instruction": "用户说：现在几点？", "input": "", "output": "[{\"action\":\"show_bubble\",\"text\":\"我看看时间。\"}]"}
