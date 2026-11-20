@@ -222,6 +222,14 @@ CAPABILITY_STORES = {
     "EVOLUTION_ENABLED": ("rules", "framework.evolution", "RuleStore"),
 }
 
+# 这一轮回复出自哪个 provider：AI 引擎记的是代号，这里翻成给用户看的字。
+# 工作台对话页的气泡会标上它——本地模型答的和云端答的，必须让人分得清。
+PROVIDER_LABELS = {
+    "lora": "本地模型",
+    "cloud": "云端模型",
+    "offline": "离线规则",
+}
+
 
 class Framework(QObject):
     """框架总控：串联 AI 引擎 / 动作解析 / 宠物控制 / 系统控制 / 记忆"""
@@ -452,11 +460,28 @@ class Framework(QObject):
             logger.warning(f"[Framework] 情绪回调失败: {e}")
 
     def ai_status_text(self) -> str:
-        """当前 AI 状态文案（设置界面显示）"""
-        if config.USE_REAL_AI and config.DEEPSEEK_API_KEY:
+        """当前 AI 状态文案（设置界面与工作台状态栏显示）
+
+        必须如实反映「这一轮可能由谁答」：本地微调开着就写本地微调，
+        否则才是云端连接或离线模式——开着本地模型还写「离线模式」是说谎。
+        """
+        from framework import lora_engine
+        cloud_on = bool(config.USE_REAL_AI and config.DEEPSEEK_API_KEY)
+        masked = ""
+        if cloud_on:
             key = config.DEEPSEEK_API_KEY
             masked = (f"{key[:6]}{'*' * max(0, len(key) - 10)}{key[-4:]}"
                       if len(key) > 12 else "***")
+            cloud_text = f"云端 {config.DEEPSEEK_MODEL} · {masked}"
+        else:
+            cloud_text = "离线规则（未配置 API Key）"
+        if config.LORA_ENABLED:
+            info = lora_engine.status()
+            if info["ready"]:
+                return (f"本地微调优先 · {info['base_model']}"
+                        f"（答不上来退 {cloud_text}）")
+            return f"本地微调不可用 · {info['reason']}（当前走 {cloud_text}）"
+        if cloud_on:
             return f"已连接 · {config.DEEPSEEK_MODEL} · {masked}"
         return "离线模式（未配置 API Key）"
 
@@ -961,6 +986,9 @@ class Framework(QObject):
 
     def _on_ai_finished_inner(self, actions: list):
         self._plan_round_pending = False
+        # 这一轮是谁答的（本地微调 / 云端 / 离线规则）：随回复一起进历史，
+        # 工作台气泡据此标来源，用户才知道这句话出自哪边。
+        self._turn_provider = getattr(self._ai_worker, "provider_used", "")
         suppress = self._suppress_fallback
         self._suppress_fallback = False
         actions = parse_actions(actions if suppress
@@ -1184,12 +1212,15 @@ class Framework(QObject):
         if not self._action_queue:
             # 一轮执行完毕：把本轮的回复整体记入历史（供折叠面板展示）
             if getattr(self, "_reply_parts", None) and self._current_user_text:
-                meta = None
+                meta = {}
                 if self._turn_evidence:
-                    meta = {"evidence": self._turn_evidence}
+                    meta["evidence"] = self._turn_evidence
                     self._turn_evidence = None
+                provider = PROVIDER_LABELS.get(self._turn_provider, "")
+                if provider:
+                    meta["provider"] = provider
                 self.memory.add("assistant", " ".join(self._reply_parts),
-                                meta=meta)
+                                meta=meta or None)
                 self._reply_parts = []
                 self.history_changed.emit()
             # 工作流启动请求：本轮收尾后作为新任务开跑（不与进行中的计划交叉）
@@ -1462,6 +1493,7 @@ class Framework(QObject):
         self._current_user_text = text
         self._reply_parts = []
         self._turn_actions = []
+        self._turn_provider = ""      # 本轮回复出自谁（本地/云端/离线），新轮清零
         self._effects_spoken = False
         # 上一轮的"这个动作已收尾"标记不能带进新一轮：快路径不经过动作队列，
         # 没人替它复位，残留的 True 会让本轮收尾被整个跳过（回复进不了历史）。

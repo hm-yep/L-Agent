@@ -1,14 +1,21 @@
+# 31 条样本、单卡 8GB（RTX 5070 Laptop）上的实测口径：
+# batch 2 × 累积 4 → 每轮 4 步；40 轮 = 160 步。
+# 8 轮（32 步）实测不够：模型学会了动作名却记不住参数，也不会吐 EOS，
+# 推理时跑满 256 token 被截断，31 条训练集上动作全对只有 12.9%。
+# 这是窄任务，过拟合就是目标，所以轮数给足。
 base_model: "Qwen/Qwen2.5-1.5B-Instruct"
 data_path: "finetune/data/train.jsonl"
 output_dir: "finetune/output"
-max_length: 512
-batch_size: 4
+# 实测样本长度 min 32 / p50 59 / p90 75 / max 160（token）。512 有三分之二
+# 花在 padding 上，192 留足余量又不浪费算力。
+max_length: 192
+batch_size: 2
 grad_accum: 4
 learning_rate: 2.0e-4
-num_epochs: 3
+num_epochs: 40
 warmup_ratio: 0.1
-logging_steps: 10
-save_steps: 100
+logging_steps: 20
+save_steps: 80
 lora_r: 8
 lora_alpha: 16
 lora_dropout: 0.05

@@ -26,13 +26,14 @@
 TRAIN_TEMPLATE = "### 指令：{instruction}\n### 输入：{input}\n### 回答：{output}"
 PROMPT_TEMPLATE = "### 指令：{instruction}\n### 输入：{input}\n### 回答："
 
-# 指令前缀：训练集 31 条里 30 条是「用户说：」，1 条是「用户问：」
+# 指令前缀：训练集 31 条统一用「用户说：」
+#
+# 这里曾经按「像不像提问」猜「用户问：/用户说：」，结果与训练集的标注对不上
+# ——训练集里「在吗？」「我的画图工具在哪里？」「你今天都干了啥？」三条带问号
+# 却标的是「用户说：」，而「你是谁？介绍一下自己。」标的是「用户问：」。规则
+# 猜出来的前缀因此有 4 条与训练分布相反，等于又一次「训的是 A、跑的是 B」。
+# 前缀本身不携带语义（模型要理解的是冒号后面那句话），统一成主前缀最稳。
 SAY_PREFIX = "用户说："
-ASK_PREFIX = "用户问："
-
-# 判定「像不像提问」用的开头词（训练集那条问句是「用户问：你是谁？介绍一下自己。」）
-_ASK_STARTERS = ("谁", "什么", "怎么", "为什么", "为啥", "哪", "如何", "多少",
-                 "是不是", "能不能", "可不可以", "有没有", "介绍", "能否")
 
 
 def build_training_text(instruction: str, input_text: str = "",
@@ -49,23 +50,16 @@ def build_prompt(instruction: str, input_text: str = "") -> str:
                                   input=input_text or "")
 
 
-def looks_like_question(text: str) -> bool:
-    """一句话是不是「提问」——决定指令前缀用「用户问：」还是「用户说：」。"""
-    t = (text or "").strip()
-    if not t:
-        return False
-    if t.endswith(("?", "？")):
-        return True
-    return t.startswith(_ASK_STARTERS)
-
-
 def instruction_for(user_text: str, input_text: str = "") -> str:
-    """把用户这句话变成训练集同款的指令。"""
+    """把用户这句话变成训练集同款的指令。
+
+    前缀恒为 `SAY_PREFIX`，不再猜测问句——猜测的规则与训练集标注无法对齐，
+    见模块里 SAY_PREFIX 处的说明。
+    """
     t = (user_text or "").strip()
     if not t:
         return ""
-    prefix = ASK_PREFIX if looks_like_question(t) else SAY_PREFIX
-    return prefix + t
+    return SAY_PREFIX + t
 
 
 def build_user_prompt(user_text: str, input_text: str = "") -> str:

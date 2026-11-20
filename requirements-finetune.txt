@@ -2,11 +2,18 @@
 #   pip install -r requirements-finetune.txt
 # 训练：python finetune/train_lora.py      （产物在 finetune/output，不入库）
 # 用起来：设置界面「本地微调模型（LoRA，选填）」里开开关 + 填适配器路径
-# 注意：正确包名是 torch（旧版 requirements.txt 曾误写成 PyTorch，
-# 那是 PyPI 上的占位包，会导致 pip 无法解析）。无 GPU 时训练不现实。
-torch>=2.0,<3.0
-peft>=0.10,<0.20
-transformers>=4.40,<5.0
-datasets>=2.18,<4.0
-accelerate>=0.29,<2.0
+#
+# 版本口径：下面这组是实际跑通过训练与推理的组合（2026-11 验证）——
+#   torch 2.7.0+cu128 / transformers 5.19.0 / peft 0.21.2 / accelerate 1.15.0
+# transformers 5.x 移除了 warmup_ratio 与 Trainer(tokenizer=)，训练脚本已按
+# 5.x 的写法适配（warmup_steps / processing_class）；4.x 上这两处同样成立。
+# 注意 1：正确包名是 torch（旧版 requirements.txt 曾误写成 PyTorch，那是
+#         PyPI 上的占位包，会让 pip 无法解析）。
+# 注意 2：RTX 50 系（sm_120）需要 torch 2.7+ 的 cu128 轮子，旧版跑不动；
+#         无 GPU 时 1.5B 前向 + LoRA 反向在 CPU 上慢到不可用。
+torch>=2.4,<3.0
+peft>=0.18,<1.0
+transformers>=5.0,<6.0
+datasets>=2.18,<5.0
+accelerate>=1.0,<2.0
 PyYAML>=6.0,<7

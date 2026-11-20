@@ -24,6 +24,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from framework import lora_format    # noqa: E402  提示词格式单一真源
+# 基座加载与产品推理共用一份「先本地缓存、再联网」的逻辑：本机 huggingface.co
+# 被挡，缓存已齐时联网校验会直接失败，训练脚本不该因此起不来。
+from framework.lora_engine import from_pretrained_cached   # noqa: E402
 
 try:
     import yaml
@@ -81,18 +84,40 @@ def build_dataset(path: str, tokenizer, max_length: int) -> Dataset:
     return Dataset.from_list(records)
 
 
+def _training_dtype():
+    """训练精度与设备：bf16 优先，其次 fp16，没有 CUDA 就 fp32。
+
+    fp16 要靠梯度缩放把数值拉回可表示范围，小样本 + 小 LoRA 下更容易出
+    NaN；能用 bf16 就用 bf16（Ampere 及之后都支持，本机 5070 也支持）。
+    """
+    import torch
+    if not torch.cuda.is_available():
+        return torch.float32, "cpu/fp32"
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16, "cuda/bf16"
+    return torch.float16, "cuda/fp16"
+
+
 def main():
+    import math
+    import torch
+
     cfg = load_config()
     print(f"[LoRA] 基座模型: {cfg['base_model']}")
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"],
-                                               trust_remote_code=True)
+    tokenizer = from_pretrained_cached(AutoTokenizer, cfg["base_model"],
+                                       trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["base_model"], trust_remote_code=True,
-        device_map="auto")
+    # 不用 device_map="auto"：Trainer 自己负责设备摆放，模型被 accelerate
+    # 分片加载后 Trainer 会拒绝训练。单卡场景显式 to(device) 最稳。
+    dtype, precision = _training_dtype()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[LoRA] 设备/精度: {precision}")
+    model = from_pretrained_cached(
+        AutoModelForCausalLM, cfg["base_model"],
+        trust_remote_code=True, dtype=dtype).to(device)
 
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -109,22 +134,36 @@ def main():
 
     Path(cfg["output_dir"]).mkdir(parents=True, exist_ok=True)
 
+    # transformers 5.x 移除了 warmup_ratio，只认 warmup_steps。这里按总步数
+    # 折算：31 条样本、batch 2 × 累积 4 时每轮 4 步，比例才落得到实处。
+    steps_per_epoch = max(1, math.ceil(
+        len(dataset) / (cfg["batch_size"] * cfg["grad_accum"])))
+    total_steps = steps_per_epoch * cfg["num_epochs"]
+    warmup_steps = int(total_steps * float(cfg["warmup_ratio"]))
+    print(f"[LoRA] 每轮 {steps_per_epoch} 步 × {cfg['num_epochs']} 轮 "
+          f"= {total_steps} 步（warmup {warmup_steps} 步）")
+
     args = TrainingArguments(
         output_dir=cfg["output_dir"],
         num_train_epochs=cfg["num_epochs"],
         per_device_train_batch_size=cfg["batch_size"],
         gradient_accumulation_steps=cfg["grad_accum"],
         learning_rate=cfg["learning_rate"],
-        warmup_ratio=cfg["warmup_ratio"],
+        warmup_steps=warmup_steps,
         logging_steps=cfg["logging_steps"],
         save_steps=cfg["save_steps"],
         save_total_limit=2,
-        fp16=True,
+        # 精度跟着加载时选的 dtype 走，避免「模型 bf16、Trainer 开 fp16」
+        # 这种半截配置（transformers 会直接报错）。
+        bf16=(dtype == torch.bfloat16),
+        fp16=(dtype == torch.float16),
         report_to="none",
     )
 
+    # transformers 5.x：Trainer 的 tokenizer 参数改名 processing_class，
+    # 旧名已删除，传了会 TypeError。
     trainer = Trainer(model=model, args=args, train_dataset=dataset,
-                      tokenizer=tokenizer)
+                      processing_class=tokenizer)
     trainer.train()
     trainer.save_model(cfg["output_dir"])
     tokenizer.save_pretrained(cfg["output_dir"])

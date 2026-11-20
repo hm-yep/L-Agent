@@ -67,6 +67,22 @@ def adapter_exists(adapter_path: str) -> bool:
     return os.path.isdir(p) and os.path.exists(os.path.join(p, ADAPTER_MARKER))
 
 
+def from_pretrained_cached(loader, name: str, **kwargs):
+    """先纯本地加载，失败再交给 loader 自己去联网。
+
+    为什么需要这一步：`from_pretrained` 默认会先向 huggingface.co 发元数据
+    请求校验缓存，网络被墙/被代理拦（本项目开发机上就是 502）时，**即使
+    权重已经完整落在本地缓存里也会直接抛错**。先试 `local_files_only=True`
+    能让「缓存齐全」这条常见路径零网络；缓存缺失时再回落到原来的联网行为，
+    首次下载不受影响。
+    """
+    try:
+        return loader.from_pretrained(name, local_files_only=True, **kwargs)
+    except Exception as e:      # noqa: BLE001 缓存不全就走联网，原因只记日志
+        logger.info(f"[LoRA] 本地缓存不可直接用（{e}），改为联网加载 {name}")
+        return loader.from_pretrained(name, **kwargs)
+
+
 def status(base_model: str = None, adapter_path: str = None,
            device: str = None) -> dict:
     """本地微调通路的状态（不加载模型、不 import torch，可以随便调）。"""
@@ -142,12 +158,12 @@ class LoraRuntime:
 
             device = self._resolve_device(torch)
             try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    self.base_model, trust_remote_code=True)
+                tokenizer = from_pretrained_cached(
+                    AutoTokenizer, self.base_model, trust_remote_code=True)
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
-                base = AutoModelForCausalLM.from_pretrained(
-                    self.base_model, trust_remote_code=True)
+                base = from_pretrained_cached(
+                    AutoModelForCausalLM, self.base_model, trust_remote_code=True)
                 base = base.to(device)
                 model = PeftModel.from_pretrained(
                     base, _resolve(self.adapter_path))

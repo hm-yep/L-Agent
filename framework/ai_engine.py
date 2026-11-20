@@ -277,6 +277,9 @@ class AIWorker(QThread):
         # 自动学到的用户偏好（不是用户显式说「记住」的那份），作为动态块
         # 追加在系统提示词之后；SYSTEM_PROMPT 常量本身保持逐字不变。
         self.prefs_text = (prefs_text or "").strip()
+        # 这一轮实际是谁答的：lora / cloud / offline。工作台气泡据此标来源，
+        # 用户才知道这句话出自本地模型还是云端。
+        self.provider_used = ""
         self._stopped = False
 
     def stop(self):
@@ -357,6 +360,7 @@ class AIWorker(QThread):
         if config.LORA_ENABLED:
             actions = self._request_lora()
             if actions:
+                self.provider_used = "lora"
                 return actions
             logger.warning("[AI] 本地微调通路没给出可用结果，改走云端模型")
         return self._request_deepseek()
@@ -417,6 +421,7 @@ class AIWorker(QThread):
                  HTTP 错误已上报 failed 时返回 _FAILED 哨兵。
         """
         if not config.USE_REAL_AI or not config.DEEPSEEK_API_KEY:
+            self.provider_used = "offline"
             return mock_ai(self.message, self.personality)
 
         url = normalize_endpoint(config.DEEPSEEK_BASE_URL)
@@ -475,6 +480,7 @@ class AIWorker(QThread):
                     continue
 
                 actions = parse_ai_content(content)
+                self.provider_used = "cloud"
                 logger.info(f"[AI] DeepSeek 返回 {len(actions)} 个动作")
                 return actions
 

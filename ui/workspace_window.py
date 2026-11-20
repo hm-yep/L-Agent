@@ -727,7 +727,8 @@ class WorkspaceWindow(QMainWindow):
                     self._insert_day_separator(day)
                     last_day = day
                 self._add_bubble(item.get("role", ""),
-                                 str(item.get("content", "")), ts)
+                                 str(item.get("content", "")), ts,
+                                 item.get("meta") or {})
         # 最近一次本机读取的证据卡：只说「读完了」用户无从判断读了什么
         log = self._read_log()
         if log:
@@ -751,14 +752,21 @@ class WorkspaceWindow(QMainWindow):
         h.insertWidget(1, lab)
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, row)
 
-    def _add_bubble(self, role: str, content: str, ts: float = 0):
+    def _add_bubble(self, role: str, content: str, ts: float = 0,
+                    meta: dict = None):
         is_me = role == "user"
         align = Qt.AlignRight if is_me else Qt.AlignLeft
         who = "你" if is_me else "凌零"
-        meta = QLabel(who + ("  ·  " + time.strftime("%m-%d %H:%M",
-                                                     time.localtime(ts))
-                             if ts else ""))
-        meta.setObjectName("bubbleMeta")
+        # 回复出自哪边（本地模型 / 云端模型 / 离线规则）：标出来，
+        # 否则用户分不清这句是本机跑的还是云端跑的
+        provider = ""
+        if not is_me and isinstance(meta, dict):
+            provider = str(meta.get("provider") or "")
+        stamp = ("  ·  " + time.strftime("%m-%d %H:%M", time.localtime(ts))
+                 if ts else "")
+        meta_text = who + (("  ·  " + provider) if provider else "") + stamp
+        meta_label = QLabel(meta_text)
+        meta_label.setObjectName("bubbleMeta")
         # 自己打的字原样显示；模型回复里的 <p> 是我们自己的排版约定，转成纯文本
         text = content if is_me else plain_text(content)
         bubble = QLabel(text)
@@ -771,7 +779,7 @@ class WorkspaceWindow(QMainWindow):
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
-        col.addWidget(meta, 0, align)
+        col.addWidget(meta_label, 0, align)
         col.addWidget(bubble, 0, align)
         container = QWidget()
         container.setLayout(col)

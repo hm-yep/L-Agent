@@ -2,6 +2,54 @@
 
 本文件按 Keep a Changelog 风格维护，每个版本条目按实际变更类型分段（如「新增 / 变更 / 隐私 / 验证」），只记录与当前仓库状态对应的变更。
 
+## [2026-11-20] · LoRA 真训一次：从「接线完成」到「训练集内 96.8%」
+
+> 用户一句话：「你帮我把这个 Lora 模块和我的这个现在的模块连接起来。」
+> 查下来接线确实做完了（provider 路由、设置界面、格式单一真源都在），
+> 但 `finetune/output` 里没有任何权重——那条链路从没跑过一次真实推理。
+
+### 新增
+
+- **`tools/eval_lora.py`**：真实权重上的质量评测，走主链路的判定函数
+  （`AIWorker._request_lora`），不另写一套标准。输出可用率 / 动作全对 / 参数全对 /
+  平均耗时，支持 `--data` 换评测集与 `--json` 落盘。
+- **`finetune/data/holdout.jsonl`**：10 条**未参与训练**的同义改写指令，
+  用来量泛化缺口（训练集内 96.8% vs holdout 60%，两个数字必须并列看）。
+
+### 变更
+
+- **`finetune/train_lora.py`**：适配 transformers 5.x（`warmup_ratio` → `warmup_steps`、
+  `Trainer(tokenizer=)` → `processing_class`、`torch_dtype` → `dtype`）。三处任一没改，
+  脚本一启动就 TypeError——原清单锁的是 4.x，与实际环境 5.19 不符。
+- **`finetune/config.yaml`**：训练步数 6 → 32 → **160**（batch 2 × 累积 4 × 40 轮），
+  `max_length` 512 → 192（实测样本 max 160 token）。32 步时 trainer loss 2.10、
+  动作全对 12.9%；160 步时 loss 0.60、动作全对 96.8%。
+- **`framework/lora_format.py`**：取消「用户问：/用户说：」的猜测，前缀恒定。
+  核对标注后发现规则把 4 条猜反（带问号却标「说」的句子推理端会发成「问」），
+  等于又一次「训的是 A、跑的是 B」。
+- **`finetune/inference.py`**：默认改贪心解码，与产品侧一致（原来是 temperature=0.7
+  采样，命令行调提示词会被误导）；`--temperature` 显式开启；加载走缓存优先逻辑。
+- **`requirements-finetune.txt`**：版本口径对齐实际验证组合
+  （torch 2.7 / transformers 5.19 / peft 0.21 / accelerate 1.15）。
+
+### 修复
+
+- **缓存优先加载**：新增 `lora_engine.from_pretrained_cached()`，先
+  `local_files_only=True` 再联网。本机 huggingface.co 被代理拦（502），
+  `from_pretrained` 会连「权重已在本地缓存」都加载失败。
+
+### 验证
+
+| 口径 | 可用 | 动作全对 | 参数全对 | 平均耗时 |
+|---|---|---|---|---|
+| 训练集 31 条（32 步旧配置） | 38.7% | 12.9% | 12.9% | 10.90 s |
+| 训练集 31 条（160 步） | 100% | 96.8% | 96.8% | 2.12 s |
+| holdout 10 条（未参与训练） | 90% | 60.0% | 50.0% | 3.80 s |
+
+- 训练：RTX 5070 Laptop，160 步 155 秒，适配器 8.7 MB（可训练参数 0.141%）。
+- 单测新增 3 项（缓存优先的调用顺序、训练脚本必须走同一份加载逻辑），
+  本地微调相关用例 25 → 28；文档 pytest 数字同步 580 passed / 1 skipped。
+
 ## [2026-11-19] · LoRA 微调接进主链路：本地模型成了第一个 provider
 
 > 用户一句话：「你把它这个 LoRA 未接入的问题解决一下。」查下来 README 的能力对照表里那行

@@ -51,24 +51,37 @@ def test_prompt_template_is_byte_identical_to_training_history():
                     "### 回答：[{\"action\": \"open_app\"}]")
 
 
-def test_instruction_prefix_follows_the_training_corpus():
-    """训练集 30 条用「用户说：」、1 条用「用户问：」，推理时要认得这两种。"""
-    assert lora_format.instruction_for("帮我打开微信") == "用户说：帮我打开微信"
-    assert lora_format.instruction_for("你是谁？") == "用户问：你是谁？"
-    assert lora_format.instruction_for("介绍一下自己") == "用户问：介绍一下自己"
-    assert lora_format.instruction_for("") == ""
-
-
-def test_training_corpus_prefixes_are_all_covered():
-    """训练集里出现过的前缀，推理必须都能生成——不然有一半样本的格式对不上。"""
-    rows = [json.loads(ln) for ln in
+def _train_rows():
+    return [json.loads(ln) for ln in
             (REPO / "finetune" / "data" / "train.jsonl")
             .read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def test_instruction_prefix_matches_training_corpus():
+    """推理端拼出来的指令，必须与训练集标注逐字一致。
+
+    历史上这里靠「像不像提问」猜前缀：训练集把「在吗？」「我的画图工具在哪里？」
+    标成「用户说：」，规则却猜「用户问：」，4 条样本的提示与训练分布相反。
+    现在前缀恒定，训练集每一句都拿来对一遍——对不上就说明又在训 A 跑 B。
+    """
+    assert lora_format.instruction_for("帮我打开微信") == "用户说：帮我打开微信"
+    assert lora_format.instruction_for("在吗？") == "用户说：在吗？"
+    assert lora_format.instruction_for("你是谁？") == "用户说：你是谁？"
+    assert lora_format.instruction_for("") == ""
+    rows = _train_rows()
     assert rows, "训练集空了"
     for item in rows:
-        prefix = item["instruction"].split("：")[0] + "："
-        assert prefix in (lora_format.SAY_PREFIX, lora_format.ASK_PREFIX), \
-            "训练集出现了推理端不会生成的指令前缀：" + prefix
+        body = item["instruction"].split("：", 1)[1]
+        assert lora_format.instruction_for(body) == item["instruction"], \
+            "推理端拼不出训练集里的这一条：" + item["instruction"]
+
+
+def test_training_corpus_uses_a_single_prefix():
+    """训练集只允许一种指令前缀：多一种就多一处「推理端猜不中」的机会。"""
+    prefixes = {item["instruction"].split("：")[0] + "："
+                for item in _train_rows()}
+    assert prefixes == {lora_format.SAY_PREFIX}, \
+        "训练集出现了别的前缀，推理端不会生成它：" + str(prefixes)
 
 
 def test_train_script_uses_shared_format_instead_of_own_template():
@@ -386,3 +399,5 @@ def test_framework_set_lora_config_persists(tmp_path, monkeypatch):
     fw.set_lora_config(False, None, None, None)
     assert cfg.LORA_ENABLED is False
     assert "未启用" in fw.lora_status_text()
+
+
