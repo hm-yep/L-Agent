@@ -31,6 +31,31 @@ class TestActionParser:
         actions = parse_actions(raw)
         assert len(actions) <= 12
 
+    def test_path_quotes_stripped_so_spaced_path_survives(self):
+        """带空格的路径被引号包住是常态，进 path_guard 前必须剥掉。
+
+        不剥的后果不是「格式问题」，是「文件不存在」——错在引号，不在文件，
+        而报错信息会把用户引到错误的方向（去怀疑路径写错了）。
+        """
+        p = "C:/Users/Wang zhi de/Desktop/主要项目/笔记.md"
+        actions = parse_actions([{"action": "read_doc",
+                                  "path": '"%s"' % p}])
+        assert actions[0]["path"] == p
+
+    def test_path_brackets_and_curly_quotes_stripped(self):
+        for wrapped in ("「D:/销售 数据.csv」", "“D:/销售 数据.csv”",
+                        "‘D:/销售 数据.csv’"):
+            actions = parse_actions([{"action": "analyze_data",
+                                      "path": wrapped}])
+            assert actions[0]["path"] == "D:/销售 数据.csv", wrapped
+
+    def test_paths_array_quotes_stripped(self):
+        actions = parse_actions([{
+            "action": "read_doc",
+            "paths": ['"a b.md"', "「c.md」", "d.md"],
+        }])
+        assert actions[0]["paths"] == ["a b.md", "c.md", "d.md"]
+
     def test_read_doc_paths_without_single_path(self):
         """批量读：paths 数组能替代 path，否则整条动作会被必填校验剔掉。"""
         actions = parse_actions([{

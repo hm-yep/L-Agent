@@ -289,6 +289,11 @@ QPushButton#sendRound { background: __ACCENT__; color: __ACCENT_TEXT__; border: 
                         border-radius: 17px; }
 QPushButton#sendRound:hover { background: __ACCENT_HOVER__; }
 QPushButton#sendRound:disabled { background: __BORDER__; color: __TEXT3__; }
+/* 命令栏里的「选文件」：无底色，只在悬停时浮出，避免和发送键抢注意力 */
+QPushButton#pickFile { background: transparent; border: none;
+                       border-radius: __RD_M__px; }
+QPushButton#pickFile:hover { background: __SURFACE2__; }
+QPushButton#pickFile:pressed { background: __PRESS__; }
 
 /* 卡片式分区：设置页 / 空状态 */
 QWidget#card { background: __SURFACE2__; border: 1px solid __BORDER__;

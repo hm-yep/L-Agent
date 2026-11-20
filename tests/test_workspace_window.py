@@ -153,6 +153,88 @@ def test_sending_from_workspace_goes_to_framework(fw_and_window, monkeypatch):
     assert w._chat_input.text() == ""
 
 
+def test_pick_file_fills_command_without_sending(fw_and_window, monkeypatch):
+    """选文件只把指令填进输入框，不直接读、也不自动发送。
+
+    两条都重要：直接发等于替用户做决定；直接读则是绕过授权链——读本机文件
+    要过 path_guard 和授权卡，入口再方便也不能把这道关（这个项目真正的边界
+    就在那一步）绕过去。
+    """
+    fw, w, _path = fw_and_window
+    from ui import file_picker
+
+    picked = "D:/资料/季度 报告.pdf"
+    monkeypatch.setattr(file_picker, "pick_file", lambda *a, **k: picked)
+    sent = []
+    monkeypatch.setattr(fw, "send_command", lambda text: sent.append(text))
+
+    w._pick_file()
+
+    assert w._chat_input.text() == file_picker.compose_command(picked)
+    assert picked in w._chat_input.text()
+    assert sent == [], "选完文件不该自动发送"
+
+
+def test_pick_file_cancel_keeps_input_untouched(fw_and_window, monkeypatch):
+    """取消选择（空路径）不能把用户已经打了一半的话清掉。"""
+    _fw, w, _path = fw_and_window
+    from ui import file_picker
+
+    monkeypatch.setattr(file_picker, "pick_file", lambda *a, **k: "")
+    w._chat_input.setText("先写着这句")
+    w._pick_file()
+    assert w._chat_input.text() == "先写着这句"
+
+
+def test_floating_bar_survives_focus_loss_while_picking(fw_and_window, monkeypatch):
+    """文件选择框抢焦点时，浮动输入条不能按「失焦即收起」把自己关掉。
+
+    这是这次改动最容易踩的地方：输入条本来一失焦就 hide()，而 QFileDialog
+    是模态的、必然抢走焦点。不拦这一下，用户还在挑文件，输入条已经没了；
+    挑完回来还得重新唤出一次。
+    """
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QFocusEvent
+
+    from ui import file_picker
+    from ui.input_dialog import InputDialog
+
+    bar = InputDialog()
+    bar.show()
+    try:
+        # 选文件过程中：失焦不许收起
+        bar._picking = True
+        bar.focusOutEvent(QFocusEvent(QEvent.FocusOut))
+        assert bar.isVisible(), "选文件期间把输入条收起来了"
+
+        # 平时：失焦照旧收起（不能因为加了保护就再也不收）
+        bar._picking = False
+        bar.focusOutEvent(QFocusEvent(QEvent.FocusOut))
+        assert not bar.isVisible()
+    finally:
+        bar.close()
+
+
+def test_floating_bar_pick_file_fills_command(fw_and_window, monkeypatch):
+    """浮动输入条选完文件：填指令、光标在末尾、且不自动发送。"""
+    from ui import file_picker
+    from ui.input_dialog import InputDialog
+
+    bar = InputDialog()
+    picked = "C:/资料/周报.docx"
+    monkeypatch.setattr(file_picker, "pick_file", lambda *a, **k: picked)
+    submitted = []
+    bar.command_submitted.connect(lambda t: submitted.append(t))
+    try:
+        bar._pick_file()
+        assert bar._edit.text() == file_picker.compose_command(picked)
+        assert bar._edit.cursorPosition() == len(bar._edit.text())
+        assert bar._picking is False, "选完必须复位，否则输入条再也不收起"
+        assert submitted == [], "选完文件不该直接提交"
+    finally:
+        bar.close()
+
+
 def test_preference_page_is_hidden_until_switch_turns_it_on(
         fw_and_window, monkeypatch):
     """偏好默认只在后台学，界面不摊开；用户主动打开开关才显示明细。

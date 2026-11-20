@@ -155,6 +155,25 @@ def _rescue_text(raw_actions) -> str:
     return "我刚才有点走神没听清，麻烦再说一遍好吗？"
 
 
+_QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("「", "」"), ("“", "”"), ("‘", "’"))
+
+
+def _clean_path(value) -> str:
+    """剥掉路径两端的空白与成对引号。
+
+    为什么需要：Windows 用户名带空格时（`C:/Users/Wang zhi de/...`），用户
+    和模型都会很自然地把整条路径用引号或「」包起来。原样交给 path_guard
+    会被当成「文件不存在」——错在引号，不在文件。这里统一剥一次，
+    读取与分析的入口都不必各自处理。
+    """
+    s = str(value or "").strip()
+    for left, right in _QUOTE_PAIRS:
+        if len(s) >= 2 and s[0] == left and s[-1] == right:
+            s = s[1:-1].strip()
+            break
+    return s
+
+
 def normalize_action(item) -> dict | None:
     """校验单个动作，非法返回 None"""
     if not isinstance(item, dict):
@@ -194,6 +213,13 @@ def normalize_action(item) -> dict | None:
         normalized["anchor"] = "center"
     if action == "set_volume":
         normalized.setdefault("app", _get_param(item, "app"))   # 空=系统音量
+
+    # 路径类参数统一去引号：带空格的路径被引号包住是常态，不该判成文件不存在
+    if "path" in normalized:
+        normalized["path"] = _clean_path(normalized["path"])
+    if "paths" in normalized:
+        normalized["paths"] = [_clean_path(p) for p in normalized["paths"]
+                               if _clean_path(p)]
 
     # ---- 电源操作：delay 可选（秒），缺省交给 power_controller 用配置默认值 ----
     if action in ("shutdown", "restart"):

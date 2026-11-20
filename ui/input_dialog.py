@@ -128,6 +128,10 @@ class InputDialog(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
 
+        # 正在弹文件选择框：模态框会抢走焦点，此时不能按「失焦即收起」处理，
+        # 否则用户还在选文件，输入条先没了。
+        self._picking = False
+
         self._init_ui()
 
     def set_aux_buttons_visible(self, visible: bool):
@@ -155,6 +159,24 @@ class InputDialog(QWidget):
         self._history_btn.setFixedHeight(INPUT_ROW_HEIGHT)
         self._history_btn.clicked.connect(self.history_requested.emit)
         row.addWidget(self._history_btn)
+
+        # 「选文件」按钮：弹系统文件框，选完把「读一下 "路径"」填进输入框。
+        # 只填指令、不直接读文件——回车后仍走 path_guard 与授权卡那条原路。
+        self._pick_btn = QPushButton("", self._panel)
+        self._pick_btn.setObjectName("pickFile")
+        try:
+            from .icons import icon as _icon
+            from PyQt5.QtCore import QSize as _QSize
+            self._pick_btn.setIcon(_icon("folder", theme.T("FLOAT_TEXT"), 14))
+            self._pick_btn.setIconSize(_QSize(14, 14))
+        except Exception:      # noqa: BLE001 图标失败不影响按钮功能
+            self._pick_btn.setText("文件")
+        self._pick_btn.setCursor(Qt.PointingHandCursor)
+        self._pick_btn.setFocusPolicy(Qt.NoFocus)   # 不抢焦点，避免输入条失焦自关
+        self._pick_btn.setFixedSize(INPUT_ROW_HEIGHT + 4, INPUT_ROW_HEIGHT)
+        self._pick_btn.setToolTip("选择本机文件（自动填好指令，回车发送）")
+        self._pick_btn.clicked.connect(self._pick_file)
+        row.addWidget(self._pick_btn)
 
         # 输入框
         self._edit = QLineEdit(self._panel)
@@ -245,6 +267,32 @@ class InputDialog(QWidget):
     # ============================================================
     # 提交
     # ============================================================
+    def _pick_file(self):
+        """弹系统文件框，把「读一下 "路径"」填进输入框。
+
+        只填指令、不直接读文件：回车后仍然走 模型 → action_parser →
+        path_guard → 授权卡 那条原路。光标停在末尾，用户可以继续补
+        「总结要点」这类要求再发。
+        """
+        from . import file_picker
+
+        self._picking = True
+        try:
+            path = file_picker.pick_file(self)
+        finally:
+            self._picking = False
+        # 模态框存在期间输入条已经失焦且被 focusOutEvent 放过（见 _picking），
+        # 这里主动收回来并让输入框拿回焦点，否则用户点完文件还得再找一次输入条。
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._edit.setFocus()
+        text = file_picker.compose_command(path) if path else ""
+        if not text:
+            return
+        self._edit.setText(text)
+        self._edit.setCursorPosition(len(text))
+
     def _on_submit(self):
         text = self._edit.text().strip()
         if not text:
@@ -261,6 +309,8 @@ class InputDialog(QWidget):
 
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
+        if self._picking:      # 文件选择框必然抢焦点，此时收起会把用户晾在半路
+            return
         self.hide()
 
 

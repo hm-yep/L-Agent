@@ -482,12 +482,13 @@ class WorkspaceWindow(QMainWindow):
 
     # ---------------- 主区底部全局命令栏 ----------------
     def _build_command_bar(self) -> QWidget:
-        """单层命令栏：一个大输入框 + 右侧圆形发送按钮。
+        """单层命令栏：选文件按钮 + 大输入框 + 圆形发送按钮。
 
         之前这里抄了参考图的一排小控件（分支 / 访问级别 / 模型 / 麦克风 /
         添加上下文），但它们在本项目里没有对应的真实能力，点了没反应、
-        是纯摆设。现在只保留真正接通的「输入 + 发送」，其余能力（语音、
-        选文件）走桌宠右键菜单或自然语言，不在这里放空壳按钮。
+        是纯摆设，所以删了。「选文件」是例外：它真能接上——弹系统文件框，
+        把「读一下 "路径"」填进输入框，回车后走的是原有链路。手打路径
+        （尤其是带空格的）太麻烦，这个按钮解决的就是这一件事。
         """
         bar = QWidget()
         bar.setObjectName("commandBar")
@@ -502,11 +503,25 @@ class WorkspaceWindow(QMainWindow):
                               theme.SP["xs"])
         cv.setSpacing(theme.SP["s"])
 
+        # 「选择文件」：弹系统文件框，把指令填进输入框。
+        # 只填路径不读文件——回车后仍走 模型 → path_guard → 授权卡，
+        # 选文件不是绕过授权链的后门（真绕过去，「点同意」就白点了）。
+        pick = QPushButton()
+        pick.setObjectName("pickFile")
+        pick.setIcon(icon("folder", theme.T("TEXT2", self._theme), 16))
+        pick.setIconSize(QSize(16, 16))
+        pick.setFixedSize(30, 30)
+        pick.setCursor(Qt.PointingHandCursor)
+        pick.setToolTip("选择本机文件（自动填好指令，回车发送）")
+        pick.clicked.connect(self._pick_file)
+        self._icon_buttons[pick] = ("folder", "muted")
+        cv.addWidget(pick, 0, Qt.AlignVCenter)
+
         # 输入框：占位文案如实描述真实交互，不再写 @ / / 这类本项目没有的前缀语法
         self._chat_input = QLineEdit()
         self._chat_input.setObjectName("commandInput")
         self._chat_input.setPlaceholderText(
-            "今天帮你做些什么？试试「读一下 D:/资料/报告.pdf」；回车发送")
+            "今天帮你做些什么？点左边文件夹选文件，或直接说一句话；回车发送")
         self._chat_input.returnPressed.connect(self._send)
         self._chat_input.setFixedHeight(theme.DIM["composer_h"])
         cv.addWidget(self._chat_input, 1)
@@ -661,6 +676,23 @@ class WorkspaceWindow(QMainWindow):
         self.switch_page(0)
         self._refresh_chat()
         self._notify("已发送指令，正在等凌零回复")
+
+    def _pick_file(self):
+        """弹系统文件框，把「读一下 "路径"」填进输入框（不自动发送）。
+
+        不自动发送是有意的：用户选完文件往往还要补一句「总结要点」，
+        直接发出去等于替他做了决定；而且读文件要过授权卡，节奏应该由人掌握。
+        """
+        from . import file_picker
+
+        path = file_picker.pick_file(self)
+        text = file_picker.compose_command(path) if path else ""
+        if not text:
+            return
+        self._chat_input.setText(text)
+        self._chat_input.setFocus()
+        self._chat_input.setCursorPosition(len(text))
+        self._notify("已选好文件，回车发送（可先在后面补一句要求）")
 
     def _confirm_new_conversation(self) -> bool:
         """清空对话记录前确认一次；单独成方法便于离屏测试替换。"""
