@@ -14,7 +14,7 @@
 |---|---|---|
 | 32 个动作（Function Calling 协议） | 桌面主链路 | `framework/action_parser.py` 的 `VALID_ACTIONS` 为动作全集 |
 | 撤销账本（后悔药） | 桌面主链路 | `framework/effect_journal.py`：8 可逆 / 15 无副作用 / 1 撤销自身 / 6 明确不可逆 / 0 未分类，有单测钉死 |
-| 技能层（save_skill / run_skill） | 桌面主链路 | `framework/skill_store.py`：只收 10 个确定性安全动作，重放零模型调用，有 import 拦截器证明 |
+| 技能层（save_skill / run_skill） | 桌面主链路 | `framework/skill_store.py`：只收 11 个确定性安全动作，重放零模型调用，有 import 拦截器证明 |
 | Plan-and-Execute | 桌面主链路 | 15 轮预算 + 2 次重规划 |
 | Quality Gate | 桌面主链路 | 识别「API 成功但结果不可用」，换词重搜 / 内容重写 / 降级 |
 | GLM-4.6V 屏幕视觉 | 桌面主链路 | `see_screen`：截图 → 压缩 → 编码 → 注入上下文 |
