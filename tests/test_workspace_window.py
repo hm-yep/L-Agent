@@ -928,7 +928,11 @@ def test_operation_rows_and_placeholder_expose_new_capability(fw_and_window):
     joined = "".join(OPERATION_ROWS)
     assert "只读这一个" in joined and "允许整个文件夹" in joined
     assert "重启后失效" in joined and "本机访问" in joined
-    assert "D:/资料/报告.pdf" in w._chat_input.placeholderText()
+    # 占位文案要让人发现「能读本机文件」。以前靠一句「试试读一下 D:/资料/报告.pdf」
+    # 教手打路径；现在入口是左边那个选文件按钮，文案就得指向按钮，
+    # 否则用户永远猜不到那儿能点。
+    hint = w._chat_input.placeholderText()
+    assert "选文件" in hint or "文件夹" in hint, hint
 
 
 def test_web_page_embeds_same_url_as_browser(fw_and_window):
