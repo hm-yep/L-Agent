@@ -1285,6 +1285,13 @@ class WorkspaceWindow(QMainWindow):
         self._web_view = None
         self._web_ready = False
         self._web_retries = 0
+        # 重试不能挂在 QTimer.singleShot 上：它不归任何窗口管，窗口关了还会
+        # 继续回调到已销毁的控件上。测试里这条最长会追 10 次、跨 12 秒，
+        # 打完正好落在别的用例中间，Windows 上直接报堆损坏（0xc0000374）。
+        # 挂成自己的子定时器，随窗口一起消失；detach() 里再主动停一次。
+        self._web_timer = QTimer(self)
+        self._web_timer.setSingleShot(True)
+        self._web_timer.timeout.connect(self._retry_web_view)
         return page, self._refresh_web
 
     def _start_web_service(self):
@@ -1295,7 +1302,7 @@ class WorkspaceWindow(QMainWindow):
         self._web_placeholder.setText("正在启动本地网页台……")
         start_api_in_thread()
         self._web_retries = 0
-        QTimer.singleShot(1200, self._retry_web_view)
+        self._web_timer.start(1200)
 
     def _retry_web_view(self):
         """后台线程起服务需要时间，用定时器等非阻塞重试，不卡 Qt。"""
@@ -1312,7 +1319,7 @@ class WorkspaceWindow(QMainWindow):
                 "或手动运行 python main.py --api 后刷新本页。")
             self._web_start_btn.show()
             return
-        QTimer.singleShot(1200, self._retry_web_view)
+        self._web_timer.start(1200)
 
     def _try_init_web_view(self):
         """懒加载内嵌浏览器：只在切到网页台时尝试，失败留说明不崩。"""
@@ -1365,6 +1372,7 @@ class WorkspaceWindow(QMainWindow):
                 % (exc, self._web_base))
             return
         self._web_view = view
+        self._web_timer.stop()
         self._web_placeholder.hide()
         self._notify("网页台已内嵌：与浏览器访问的是同一份网页")
 
@@ -1610,6 +1618,9 @@ class WorkspaceWindow(QMainWindow):
             pass
         self._status_timer.stop()
         self._feedback_timer.stop()
+        # 网页台的重试链也得停：窗口都关了还在等「服务起来没有」没有意义，
+        # 回调打在一个已 hide/待销毁的窗口上只会出事。
+        self._web_timer.stop()
 
     def switch_page(self, index: int):
         index = max(0, min(index, len(PAGE_DEFS) - 1))
