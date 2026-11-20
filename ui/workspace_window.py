@@ -749,16 +749,7 @@ class WorkspaceWindow(QMainWindow):
         self._attached_files.append(path)
 
         card = QWidget()
-        card.setStyleSheet("""
-            QWidget {
-                background-color: rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }
-            QLabel { border: none; color: #ddd; font-size: 12px; background: transparent; }
-            QPushButton { border: none; color: #888; font-weight: bold; font-size: 12px; background: transparent; }
-            QPushButton:hover { color: #ff5555; }
-        """)
+        card.setObjectName("attachmentCard")
         h = QHBoxLayout(card)
         h.setContentsMargins(8, 4, 4, 4)
         h.setSpacing(6)

@@ -19,7 +19,7 @@
 ### 验证
 
 - `tests/test_workspace_window.py` 新增 2 项：`test_web_page_shows_only_the_web_input`（网页台页命令栏真的隐藏、网页 HTML 里确实有输入框、切回对话页命令栏回来）、`test_status_bar_keeps_only_feedback`（窗口里没有 statChip、状态栏里没有那七个数字与模型状态、复制摘要的内容还在）。
-- `pytest -q`：600 passed / 1 skipped（共收集 601）；`python tools/check_contracts.py`：111/111；`docs/QUICK_START.md` 断言 8 第 3 步补上「这一页底下不再有工作台命令栏」。文档里的 pytest 数字同步到 600/601（三份文档口径由契约检查对着真实收集结果钉死）。
+- `pytest -q`：609 passed / 1 skipped（共收集 610）；`python tools/check_contracts.py`：111/111；`docs/QUICK_START.md` 断言 8 第 3 步补上「这一页底下不再有工作台命令栏」。文档里的 pytest 数字同步到 609/610（三份文档口径由契约检查对着真实收集结果钉死）。
 
 ## [2026-11-20] · LoRA 真训一次：从「接线完成」到「训练集内 96.8%」
 

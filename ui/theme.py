@@ -302,6 +302,15 @@ QPushButton#pickFile { background: transparent; border: none;
 QPushButton#pickFile:hover { background: __SURFACE2__; }
 QPushButton#pickFile:pressed { background: __PRESS__; }
 
+/* 附件卡片：命令栏里挂出的文件/文件夹，浅底 + 圆角，删除键悬停变红 */
+QWidget#attachmentCard { background: __SURFACE2__; border: 1px solid __BORDER__;
+                         border-radius: __RD_S__px; }
+QWidget#attachmentCard QLabel { border: none; color: __TEXT__; font-size: __FS_SMALL__px;
+                                background: transparent; }
+QWidget#attachmentCard QPushButton { border: none; color: __TEXT3__; font-weight: bold;
+                                     font-size: __FS_SMALL__px; background: transparent; }
+QWidget#attachmentCard QPushButton:hover { color: __BAD__; }
+
 /* 卡片式分区：设置页 / 空状态 */
 QWidget#card { background: __SURFACE2__; border: 1px solid __BORDER__;
                border-radius: __RD_L__px; }

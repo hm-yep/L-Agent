@@ -277,7 +277,7 @@ python tools/trace_view.py --trace data/trajectory.jsonl --out timeline.html
 
 | 口径 | 命令 | 实测结果（2026-11-19） |
 |---|---|---|
-| pytest 单测 | `pytest -q` | 600 passed / 1 skipped |
+| pytest 单测 | `pytest -q` | 609 passed / 1 skipped |
 | 契约检查 | `python tools/check_contracts.py` | 111/111 通过 |
 | tools 集成自检 | `python tools/test_agent_features.py` | 157 通过 / 0 失败 |
 | 能力评测集 | `python tools/eval_tasks.py` | 38/38 通过 |

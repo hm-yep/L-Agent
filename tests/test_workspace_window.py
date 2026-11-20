@@ -153,12 +153,12 @@ def test_sending_from_workspace_goes_to_framework(fw_and_window, monkeypatch):
     assert w._chat_input.text() == ""
 
 
-def test_pick_file_fills_command_without_sending(fw_and_window, monkeypatch):
-    """选文件只把指令填进输入框，不直接读、也不自动发送。
+def test_pick_file_adds_attachment_without_sending(fw_and_window, monkeypatch):
+    """选文件只把文件挂进附件区，不直接读、也不自动发送。
 
     两条都重要：直接发等于替用户做决定；直接读则是绕过授权链——读本机文件
     要过 path_guard 和授权卡，入口再方便也不能把这道关（这个项目真正的边界
-    就在那一步）绕过去。
+    就在那一步）绕过去。附件先挂卡片上，回车时才由 _send 拼成指令、仍走原路。
     """
     fw, w, _path = fw_and_window
     from ui import file_picker
@@ -170,8 +170,7 @@ def test_pick_file_fills_command_without_sending(fw_and_window, monkeypatch):
 
     w._pick_file()
 
-    assert w._chat_input.text() == file_picker.compose_command(picked)
-    assert picked in w._chat_input.text()
+    assert picked in w._attached_files, "选中的文件应挂到附件区"
     assert sent == [], "选完文件不该自动发送"
 
 
