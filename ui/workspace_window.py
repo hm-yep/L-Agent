@@ -154,7 +154,7 @@ class WorkspaceWindow(QMainWindow):
     def __init__(self, fw, parent=None, settings_path: str = None):
         super().__init__(parent)
         self.fw = fw
-        self.setWindowTitle("凌零 · 工作台")
+        self.setWindowTitle("工作台")
         # 标准窗口：保留系统标题栏与最小化/最大化/关闭按钮
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(960, 600)

@@ -322,11 +322,8 @@ class HistoryPanel(QWidget):
         self._list.itemDoubleClicked.connect(self._on_item_picked)
         outer.addWidget(self._list, 1)
 
-        # ---- 底部提示 ----
-        tip = QLabel("双击可重新发送 · 长回复点「展开全文」 · 每条可复制 / 删除")
-        tip.setObjectName("historyTip")
-        tip.setAlignment(Qt.AlignCenter)
-        outer.addWidget(tip)
+        # 底部不再放操作提示条：双击 / 展开 / 复制这些入口在列表项上已可
+        # 直接看到，常驻一行说明反而把记录列表压短。空着不如不留。
 
         wrapper = QVBoxLayout(self)
         wrapper.setContentsMargins(PANEL_WRAP_MARGIN, PANEL_WRAP_MARGIN,

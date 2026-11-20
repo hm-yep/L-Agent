@@ -51,7 +51,9 @@ def test_is_a_standard_resizable_main_window(fw_and_window):
     _fw, w, _path = fw_and_window
     assert isinstance(w, QMainWindow)
     assert not w.windowFlags() & Qt.FramelessWindowHint
-    assert w.windowTitle() == "凌零 · 工作台"
+    # 系统标题栏只写「工作台」：品牌名在窗口内左侧导航顶部（brand 标签）
+    # 已经有了，标题栏再重复一遍，在任务栏和标题栏之间会显得啰嗦。
+    assert w.windowTitle() == "工作台"
     assert w.minimumWidth() >= 900 and w.minimumHeight() >= 600
 
 
