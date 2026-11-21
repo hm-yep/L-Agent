@@ -405,6 +405,12 @@ QLabel#bubbleAi {
     padding: 9px 13px; font-size: __FS_BODY__px;
 }
 QLabel#bubbleMeta { color: __TEXT3__; font-size: __FS_MICRO__px; }
+/* 对话页图片缩略图（视觉定位标注图等）：点开在工作台内看大图 */
+QLabel#imageThumb {
+    background: __SURFACE2__; border: 1px solid __BORDER__;
+    border-radius: __RD_M__px; padding: 4px;
+}
+
 /* 系统事件（文档已生成 / 提醒触发等）：弱化通栏提示，不占气泡、不抢对话注意力 */
 QLabel#systemNote {
     color: __TEXT3__; font-size: __FS_CAPTION__px;

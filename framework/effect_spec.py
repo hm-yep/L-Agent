@@ -116,6 +116,8 @@ SPECS = {
                         params=["doc_type"],
                         pre="doc_type 属于 ppt/doc/xlsx/pdf/html"),
     "see_screen": _spec("no_effect", idempotent=True),
+    "screen_locate": _spec("no_effect", idempotent=True, params=["target"],
+                           pre="target 非空"),
     "remember": _spec("reversible", ("facts",), "forget_fact",
                       params=["fact"]),
     "show_plan": _spec("no_effect", idempotent=True),

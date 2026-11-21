@@ -297,11 +297,15 @@ class PetWindow(QWidget):
     # ============================================================
     def _show_input(self):
         """单击角色：弹出跟随输入框"""
+        if self._workspace_mode:
+            return   # 工作台打开中：桌宠浮层整体不出现
         self.input_box.popup_at(self.x(), self.y())
         self._idle_seconds = 0
 
     def _show_history(self):
         """输入条上的「记录」按钮：在角色侧面打开聊天记录面板"""
+        if self._workspace_mode:
+            return   # 工作台打开中：历史面板不叠到工作台上
         self.history_panel.popup_at(self.x(), self.y())
 
     def _on_resend(self, text: str):
@@ -374,8 +378,13 @@ class PetWindow(QWidget):
             self.workspace.hide()
 
     def _on_screenshot_restore(self):
-        """截图完成，恢复角色显示"""
-        if not self.isVisible():
+        """截图完成，恢复角色显示。
+
+        工作台模式下必须保持隐藏：截图动作（看屏幕 / 视觉定位）会在工作台里
+        触发，若无条件 show()，桌宠就会被自己的一次截图重新拽回桌面，压在
+        工作台上。
+        """
+        if not self._workspace_mode and not self.isVisible():
             self.show()
         plan_card = getattr(self.fw, "plan_card", None)
         if plan_card is not None and self._plan_card_was_visible:

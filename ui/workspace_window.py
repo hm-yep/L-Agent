@@ -31,13 +31,14 @@ from pathlib import Path
 
 from PyQt5.QtCore import (
     Qt, QObject, QSettings, QRect, QSize, QTimer, QUrl, pyqtSignal, pyqtSlot)
-from PyQt5.QtGui import QDesktopServices, QFontMetrics, QTextDocument
+from PyQt5.QtGui import (
+    QDesktopServices, QFontMetrics, QPixmap, QTextDocument)
 
 from .icons import icon, icon_label
 from . import theme
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QFileDialog, QFrame,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QAbstractItemView, QApplication, QButtonGroup, QDialog, QFileDialog, QFrame,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStatusBar,
     QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
@@ -48,6 +49,17 @@ from framework.path_guard import describe_formats
 from framework.utils import app_data_dir, logger, plain_text
 
 VERSION = "v1.0.0"
+
+
+class _ClickableImage(QLabel):
+    """对话页里的图片缩略图：点一下在工作台内看大图。"""
+
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 def _soft_break(text: str) -> str:
@@ -238,6 +250,8 @@ class WorkspaceWindow(QMainWindow):
 
         # 附件列表内存缓存（文件 / 文件夹都放这里）
         self._attached_files = []
+        # 指令发出到回复落进历史之间：底栏常亮「正在思考」
+        self._awaiting_reply = False
 
         self._build_menu()
         self._build_ui()
@@ -282,6 +296,10 @@ class WorkspaceWindow(QMainWindow):
         act = win_menu.addAction("回到桌宠（隐藏本窗口）")
         act.triggered.connect(self.hide_to_pet)
 
+        tool_menu = bar.addMenu("工具(&T)")
+        act = tool_menu.addAction("视觉定位屏幕控件…")
+        act.triggered.connect(self._locate_screen_control)
+
         help_menu = bar.addMenu("帮助(&H)")
         act = help_menu.addAction("打开使用文档")
         act.triggered.connect(self._open_docs)
@@ -291,6 +309,22 @@ class WorkspaceWindow(QMainWindow):
         about_menu = bar.addMenu("关于(&A)")
         act = about_menu.addAction("关于与状态")
         act.triggered.connect(lambda: self.switch_page(page_index("about")))
+
+    def _locate_screen_control(self):
+        """工具菜单入口：输入要找的控件，交给 screen_locate 定位。
+
+        这是给「知道要说什么」之外的用户准备的可见入口——不然功能只能靠
+        模型自己想起来调用，界面上完全找不到。
+        """
+        target, ok = QInputDialog.getText(
+            self, "视觉定位屏幕控件",
+            "要定位屏幕上哪个控件？可以描述外观，例如：\n"
+            "蓝色的提交按钮 / 左上角的搜索框 / 任务栏上的微信图标")
+        target = (target or "").strip()
+        if not ok or not target:
+            return
+        self._chat_input.setText(f"帮我定位屏幕上「{target}」的位置")
+        self._send()
 
     # ------------------------------------------------------------
     # 统一反馈：任何按钮操作都要在状态栏右侧留下一句看得见的结果
@@ -838,7 +872,28 @@ class WorkspaceWindow(QMainWindow):
         self.fw.send_command(text)
         self.switch_page(0)
         self._refresh_chat()
-        self._notify("已发送指令，正在等凌零回复")
+        self._await_reply()
+
+    def _await_reply(self):
+        """指令已发出：底栏常亮「正在思考」，直到回复落进历史。
+
+        长回答（尤其命中截断重试）可能要几十秒；6 秒就消失的提示会让人
+        以为消息没发出去。这里改成常亮，收到回复再收掉。
+        """
+        self._awaiting_reply = True
+        self._feedback_timer.stop()
+        self._feedback.setText("凌零正在思考…（长回答可能需要几十秒）")
+        self._feedback.setProperty("role", "good")
+        _repolish(self._feedback)
+        QTimer.singleShot(180000, self._clear_awaiting)
+
+    def _clear_awaiting(self):
+        """兜底：模型超时或失败时，别让「正在思考」永远挂着。"""
+        if not self._awaiting_reply:
+            return
+        self._awaiting_reply = False
+        self._notify("还没等到回复，可能是网络或模型超时，可再试一次",
+                     ok=False)
 
     def _pick_file(self):
         """弹系统文件框，把选中文件加入附件区（不自动发送）。"""
@@ -895,6 +950,14 @@ class WorkspaceWindow(QMainWindow):
         self._chat_input.selectAll()
 
     def _refresh_chat(self):
+        # 回复已落进历史：收掉底栏常亮的「正在思考」
+        full_history = list(getattr(self.fw.memory, "history", []) or [])
+        if self._awaiting_reply and full_history and \
+                full_history[-1].get("role") == "assistant":
+            self._awaiting_reply = False
+            feedback = getattr(self, "_feedback", None)
+            if feedback is not None:
+                feedback.clear()
         # 清空旧气泡（保留末尾的 stretch 弹簧）
         while self._chat_layout.count() > 1:
             item = self._chat_layout.takeAt(0)
@@ -906,7 +969,7 @@ class WorkspaceWindow(QMainWindow):
                 w.setParent(None)
                 w.deleteLater()
         self._bubble_rows = []
-        history = list(getattr(self.fw.memory, "history", []) or [])[-60:]
+        history = full_history[-60:]
         if not history:
             empty = QLabel("还没有对话。在底部命令栏输入一句话，或点桌宠直接说。")
             empty.setObjectName("emptyState")
@@ -981,10 +1044,72 @@ class WorkspaceWindow(QMainWindow):
         col.setSpacing(2)
         col.addWidget(meta_label, 0, align)
         col.addWidget(bubble, 0, align)
+        # 本轮产出的截图/标注图：直接在对话流里给缩略图，点开看大图，
+        # 不让用户拿着一串 data/vision_locate 路径自己去翻文件
+        if not is_me and isinstance(meta, dict):
+            for image_path in meta.get("images") or []:
+                thumb = self._make_image_thumb(str(image_path))
+                if thumb is not None:
+                    col.addWidget(thumb, 0, align)
         container = QWidget()
         container.setLayout(col)
         # 插到末尾弹簧之前
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, container)
+
+    def _make_image_thumb(self, path: str):
+        """生成对话页缩略图：读不出图就静默跳过，不把对话流弄断。"""
+        pixmap = QPixmap(path)
+        if pixmap.isNull() or pixmap.width() <= 0:
+            return None
+        max_w = min(420, max(200, self._bubble_max_w()))
+        scaled = pixmap
+        if scaled.width() > max_w:
+            scaled = scaled.scaledToWidth(max_w, Qt.SmoothTransformation)
+        if scaled.height() > 320:
+            scaled = scaled.scaledToHeight(320, Qt.SmoothTransformation)
+        thumb = _ClickableImage()
+        thumb.setObjectName("imageThumb")
+        thumb.setPixmap(scaled)
+        thumb.setCursor(Qt.PointingHandCursor)
+        thumb.setToolTip("点击查看大图")
+        thumb.clicked.connect(lambda p=path: self._open_image(p))
+        return thumb
+
+    def _open_image(self, path: str):
+        """工作台内的大图查看：自适应窗口，另有「用系统程序打开」。"""
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "打不开图片",
+                                f"这个文件读不出来：\n{path}")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(os.path.basename(path) or "查看图片")
+        dialog.resize(min(1000, pixmap.width() + 48),
+                      min(760, pixmap.height() + 96))
+        layout = QVBoxLayout(dialog)
+
+        view = QLabel()
+        view.setAlignment(Qt.AlignCenter)
+        view.setPixmap(pixmap.scaled(
+            dialog.size() - QSize(48, 88),
+            Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        scroll = QScrollArea()
+        scroll.setWidget(view)
+        scroll.setWidgetResizable(True)
+        scroll.setAlignment(Qt.AlignCenter)
+        layout.addWidget(scroll, 1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        open_btn = QPushButton("用系统程序打开")
+        open_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        row.addWidget(open_btn)
+        row.addWidget(close_btn)
+        layout.addLayout(row)
+        dialog.exec_()
 
     def _insert_system_note(self, text: str, ts: float):
         """系统事件用一条通栏弱化提示呈现，不占气泡、不抢对话注意力。

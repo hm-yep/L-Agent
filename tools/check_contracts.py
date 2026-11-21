@@ -237,7 +237,7 @@ def main() -> int:
     print("=== 可验证执行（L1/L2）===")
     from framework import effect_spec
     spec_problems = effect_spec.validate_specs()
-    check("32 个动作的副作用契约完备", not spec_problems,
+    check("33 个动作的副作用契约完备", not spec_problems,
           "; ".join(spec_problems[:3]))
     from framework import evolution, plan_graph, preference, trajectory
     check("轨迹/偏好/进化/计划图模块可用",
@@ -592,7 +592,7 @@ def main() -> int:
           _web_shot.exists() and _web_shot.stat().st_size > 50_000,
           "缺 output/grant_ui/workspace_web_after_fix_screen.png（或小于 50 KB）："
           "这一页要用真窗口里渲染出来的截图作证，不接受只跑通导入链路的图")
-    check("面向用户的文档动作数统一为 32",
+    check("面向用户的文档动作数统一为 33",
           all("30 个动作" not in p.read_text(encoding="utf-8")
               and "30 个工具动作" not in p.read_text(encoding="utf-8")
               for p in (ROOT / "README.md", ROOT / "产品功能介绍.md",

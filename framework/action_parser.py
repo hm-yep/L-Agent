@@ -19,8 +19,8 @@ VALID_ACTIONS = {
     "shutdown", "restart", "lock", "cancel_shutdown",
     # ---- 文档生成（PPT / Word / Excel）----
     "create_doc",
-    # ---- 屏幕视觉理解 / 长期记忆 / 任务规划 / 提醒待办 ----
-    "see_screen", "remember", "show_plan",
+    # ---- 屏幕视觉理解 / 传统 CV 定位 / 长期记忆 / 任务规划 / 提醒待办 ----
+    "see_screen", "screen_locate", "remember", "show_plan",
     "remind", "todo_add", "todo_done", "todo_list",
     # ---- 联网检索 / 本机文档阅读 / 工作日志 / 工作流编排 ----
     "web_search", "read_doc", "list_dir", "edit_doc", "work_log",
@@ -43,6 +43,8 @@ REQUIRED_PARAMS = {
     "create_doc": ["doc_type"],
     # see_screen 的 question 不设为必填：模型偶尔不给参数时也应继续看屏幕
     # （缺参剔除会让用户只看到"收到"就没有后续），question 由执行层兜底
+    # screen_locate 必须给 target，否则不知道该在屏幕上找什么
+    "screen_locate": ["target"],
     "remember": ["fact"],
     "remind": ["text"],
     "todo_add": ["text"],
@@ -78,8 +80,11 @@ PARAM_ALIASES = {
     "doc_type": ["doc_type", "type", "filetype", "kind", "文档类型", "类型"],
     "filename": ["filename", "file_name", "name", "文件名", "名称"],
     "content":  ["content", "data", "spec", "内容", "内容结构"],
-    # 屏幕视觉 / 长期记忆 / 提醒待办
+    # 屏幕视觉 / 传统 CV 定位 / 长期记忆 / 提醒待办
     "question": ["question", "问题", "提问", "想知道"],
+    "target":   ["target", "target_desc", "description", "目标", "控件",
+                 "目标控件", "描述", "要找的东西"],
+    "template": ["template", "template_path", "模板", "模板图", "模板路径"],
     "fact":     ["fact", "info", "信息", "记忆", "事实"],
     "seconds":  ["seconds", "second", "sec", "延时秒数", "秒", "等待秒"],
     "minutes":  ["minutes", "minute", "delay", "延时", "分钟", "时间"],

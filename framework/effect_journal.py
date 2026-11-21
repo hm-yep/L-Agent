@@ -81,7 +81,8 @@ def trajectory_name(action: dict) -> str:
 # 确定无外部副作用的动作（只改桌宠姿态/界面显示，或只读）
 NO_EFFECT = {
     "think", "idle", "jump", "move_to", "show_bubble", "show_card",
-    "search_app", "see_screen", "web_search", "read_doc", "list_dir",
+    "search_app", "see_screen", "screen_locate", "web_search", "read_doc",
+    "list_dir",
     "work_log", "todo_list", "show_plan", "cancel_shutdown", "save_skill",
 }
 

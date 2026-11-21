@@ -31,3 +31,8 @@ pywin32>=306,<312; sys_platform == "win32"
 # ---------- 数据分析 ----------
 pandas>=2.0,<3
 matplotlib>=3.7,<4
+
+# ---------- 传统 CV 视觉定位（framework/vision_locator.py）----------
+# screen_locate 动作用它做边缘候选与多尺度模板匹配；缺了不影响其它动作，
+# 只把该动作降级为“装上就能用”的明确提示。
+opencv-python>=4.8,<5

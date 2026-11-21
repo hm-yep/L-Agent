@@ -21,7 +21,7 @@ import re
 import threading
 import time
 
-from framework import config
+from framework import config, recovery
 from framework import effect_journal, skill_store
 from framework.action_parser import parse_actions
 from framework.ai_engine import AIWorker
@@ -325,6 +325,8 @@ class Framework(QObject):
         self._effects_spoken = False                # 本轮是否已播报过差集
         # 读取证据：本轮读到了什么（工作台对话页据此渲染证据卡）
         self._turn_evidence = None
+        # 本轮产生的截图/标注图：工作台对话页据此渲染可点击缩略图
+        self._turn_images = []
         self._read_log = []                         # 最近 50 条读取记录（本机访问页用）
         # 技能层：上一轮的动作序列（用户说"存成技能"时拿它抽骨架）+ 技能库
         self._last_turn_actions = []
@@ -1200,6 +1202,8 @@ class Framework(QObject):
         """AI 请求失败：明确告知用户并复位状态（不卡死、不留悬空状态）"""
         self._traj_event("failure", source="model", ok=False,
                          note=str(error)[:200])
+        # 模型请求失败：策略表里是 escalate，不自动重试（怕重复扣费）
+        self._last_failure = recovery.record("model_error", detail=str(error))
         self._clear_plan_transient()
         self._busy = False
         self._action_queue = []
@@ -1230,6 +1234,9 @@ class Framework(QObject):
                 if self._turn_evidence:
                     meta["evidence"] = self._turn_evidence
                     self._turn_evidence = None
+                if self._turn_images:
+                    meta["images"] = list(self._turn_images)
+                    self._turn_images = []
                 provider = PROVIDER_LABELS.get(self._turn_provider, "")
                 if provider:
                     meta["provider"] = provider
@@ -1263,13 +1270,18 @@ class Framework(QObject):
                     if self._plan_no_progress_rounds >= config.PLAN_NO_PROGRESS_ROUNDS:
                         self._plan_no_progress_rounds = 0
                         self._note_plan_failure(
-                            "模型连续只回了说话/表演类动作，没有推进步骤")
+                            "模型连续只回了说话/表演类动作，没有推进步骤",
+                            kind="no_progress")
                 else:
                     self._plan_no_progress_rounds = 0
                 fail_note = self._plan_fail_note
                 if fail_note:
-                    # 步骤受阻：预算内先让 AI 自动重规划，用尽则交还用户
-                    if plan.get("replans", 0) < config.PLAN_MAX_REPLANS:
+                    # 步骤受阻：按失败类型查策略表，预算内重规划，用尽交还用户
+                    decision, _why = recovery.decide(
+                        getattr(self, "_plan_fail_kind", "tool_error"),
+                        replans=int(plan.get("replans", 0)),
+                        max_replans=config.PLAN_MAX_REPLANS)
+                    if decision == "replan":
                         self._busy = False
                         QTimer.singleShot(600, self._plan_replan)
                         return
@@ -1402,6 +1414,8 @@ class Framework(QObject):
         # ---- 屏幕视觉 / 长期记忆 / 任务规划 / 提醒待办 ----
         elif name == "see_screen":
             self._do_see_screen(action)
+        elif name == "screen_locate":
+            self._do_screen_locate(action)
         elif name == "remember":
             self._do_remember(action)
         elif name == "show_plan":
@@ -1495,7 +1509,7 @@ class Framework(QObject):
         self.set_emotion("sweat")
         self.show_bubble(f"「{name}」这步等太久没动静，我先跳过它继续往下走；"
                          "做得到的一定做完，做不到的会告诉你原因。")
-        self._note_plan_failure(f"动作{name}等待超时")
+        self._note_plan_failure(f"动作{name}等待超时", kind="timeout")
         self._finish_action()
 
     # ============================================================
@@ -1519,6 +1533,7 @@ class Framework(QObject):
         self._current_user_text = text
         self._reply_parts = []
         self._turn_actions = []
+        self._turn_images = []
         self._turn_provider = ""      # 本轮回复出自谁（本地/云端/离线），新轮清零
         self._effects_spoken = False
         # 上一轮的"这个动作已收尾"标记不能带进新一轮：快路径不经过动作队列，
@@ -2379,6 +2394,123 @@ class Framework(QObject):
             self._note_plan_failure(f"看屏幕失败（{answer}）")
         self._finish_action()
 
+    def _do_screen_locate(self, action: dict):
+        """传统 CV 定位：截图 → 边缘/模板候选 → 标注图 + 坐标播报。
+
+        与 see_screen 的分工：
+            see_screen 要视觉模型 Key，回答"屏幕上是什么"；
+            screen_locate 只用 OpenCV，没有 Key 也能跑，回答"目标在哪里"。
+        """
+        import tempfile
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtWidgets import QApplication
+
+        target = str(action.get("target") or "").strip()
+        template = str(action.get("template") or "").strip()
+        if not target and not template:
+            self.set_emotion("sweat")
+            self.show_bubble("要定位屏幕上的什么？可以说得具体一点，"
+                             "或给一张模板图片。")
+            self._note_plan_failure("screen_locate 缺少 target")
+            self._finish_action()
+            return
+
+        from framework import vision_locator
+        if not vision_locator.is_available():
+            self.set_emotion("sweat")
+            self.show_bubble("视觉定位要用 OpenCV：装一下 opencv-python，"
+                             "我就能在屏幕上找控件了。")
+            self._note_plan_failure("缺少 OpenCV 依赖")
+            self._finish_action()
+            return
+
+        self.set_pose("think")
+        self.show_bubble(f"我在屏幕上找「{target or '目标控件'}」……")
+
+        def capture():
+            self.screenshot_hide.emit()
+
+            def grab():
+                screen = QApplication.primaryScreen()
+                pixmap = screen.grabWindow(0)
+                self.screenshot_restore.emit()
+                self.set_pose("think")
+                if pixmap.isNull():
+                    self.set_emotion("sweat")
+                    self.show_bubble("屏幕没抓下来，请再试一次。")
+                    self._finish_action()
+                    return
+                if pixmap.width() > 1600:
+                    pixmap = pixmap.scaledToWidth(1600,
+                                                  Qt.SmoothTransformation)
+                path = os.path.join(tempfile.gettempdir(),
+                                    f"pet_locate_{int(time.time())}.jpg")
+                if not pixmap.save(path, "JPG", 85):
+                    self.set_emotion("sweat")
+                    self.show_bubble("屏幕图片编码失败，请再试一次。")
+                    self._finish_action()
+                    return
+                try:
+                    result = vision_locator.locate(path, target, template)
+                except Exception as e:  # noqa: BLE001 定位异常不拖垮动作链
+                    logger.exception(f"[VisionLocator] 定位异常: {e}")
+                    result = {"ok": False, "candidates": [],
+                              "reason": f"定位过程出了点问题（{type(e).__name__}）"}
+                self._on_locate_done(result, path)
+
+            # 等助手窗口真正从屏幕上消失再抓
+            QTimer.singleShot(350, grab)
+
+        QTimer.singleShot(1000, capture)
+
+    def _on_locate_done(self, result: dict, image_path: str):
+        """视觉定位返回：播报候选坐标，并把标注图落盘供用户核对。"""
+        import tempfile
+        if not result.get("ok"):
+            self.set_emotion("sweat")
+            self.show_bubble(result.get("reason") or "这次没定位成功。")
+            self._note_plan_failure("视觉定位失败")
+            self._finish_action()
+            return
+        candidates = result.get("candidates") or []
+        target = result.get("target") or "目标控件"
+        if not candidates:
+            self.set_emotion("sweat")
+            self.show_bubble("屏幕上没找到明显的候选区域，"
+                             "换个说法或给张模板图再试一次？")
+            self._note_plan_failure("视觉定位无候选")
+            self._finish_action()
+            return
+        from framework import vision_locator
+        from framework.utils import app_data_dir
+        # 标注图落盘到 data/vision_locate/：临时目录用户找不到，
+        # 定位结果是要给人核对坐标的，图必须留在能再次打开的位置
+        out_dir = os.path.join(app_data_dir(), "vision_locate")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError:
+            out_dir = tempfile.gettempdir()
+        out_path = os.path.join(out_dir, f"locate_{int(time.time())}.jpg")
+        marked = ""
+        if vision_locator.annotate(image_path, candidates, out_path):
+            marked = f"标注图已存到 {out_path}。"
+            self._turn_images.append(out_path)
+        top = candidates[0]
+        x, y, w, h = top["bbox"]
+        method = "模板匹配" if result.get("method") == "template" else "边缘候选"
+        self.set_emotion("star")
+        # 桌宠端弹结果卡，工作台对话页同步气泡：两端都能看到这次定位
+        self.show_card("视觉定位结果",
+                       path=f"最可能 ({x}, {y})，大小 {w}×{h}",
+                       size=f"{len(candidates)} 个候选 · {method}")
+        self.show_bubble(f"用{method}找到 {len(candidates)} 个候选，"
+                         f"最可能在 ({x}, {y})，大小 {w}×{h}，"
+                         f"置信度 {top['score']:.2f}。{marked}")
+        self._reply_parts.append(
+            f"[视觉定位] {target} → ({x}, {y}) {w}×{h}，"
+            f"共 {len(candidates)} 个候选（{method}）")
+        self._finish_action()
+
     def _arm_vision_watchdog(self):
         """看屏幕兜底闹钟：视觉线程万一卡死（如 DNS 解析不受 requests
         超时管束），到点强制收尾并给出反馈，绝不让助手无声卡住。"""
@@ -2882,8 +3014,11 @@ class Framework(QObject):
             notes=self._notes_text(), skills=self.skills.catalog_text(),
             allow_lora=False)   # 计划语义不在本地微调训练集射程内，直接问云端
 
-    def _note_plan_failure(self, reason: str):
-        """计划执行中某步受阻：记下原因，本轮收口后触发自动重规划"""
+    def _note_plan_failure(self, reason: str, kind: str = "tool_error"):
+        """计划执行中某步受阻：记下原因与失败类型，收口后按策略处理。"""
+        self._plan_fail_kind = kind
+        self._last_failure = recovery.record(
+            kind, action=self._current_action_name, detail=str(reason))
         # 失败是「自我进化」的原料：先落进轨迹，收口时由规则库归纳
         self._traj_event("failure", action=self._current_action_name,
                          source="system", ok=False, note=str(reason)[:200])

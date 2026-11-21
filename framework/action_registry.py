@@ -43,6 +43,8 @@ ACTION_SPECS = {
                      "desc": "生成 PPT/Word/Excel/PDF/网页报告"},
     # ---- 视觉 / 记忆 / 规划 ----
     "see_screen":   {"params": [],        "effect": "no_effect", "skill": False, "desc": "看屏幕并回答"},
+    "screen_locate": {"params": ["target"], "effect": "no_effect", "skill": False,
+                      "desc": "用传统 CV 在屏幕上定位控件候选框"},
     "remember":     {"params": ["fact"],  "effect": "reversible","skill": True,  "desc": "记一条长期记忆"},
     "show_plan":    {"params": [],        "effect": "no_effect", "skill": False, "desc": "出计划卡等确认"},
     # ---- 事务台 ----

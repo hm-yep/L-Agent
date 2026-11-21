@@ -14,10 +14,10 @@ Provider 顺序（framework/ai_engine.py 的 _request_model）：
 AI 配置项在运行时从 framework.config 读取，可在设置界面修改并持久化：
     api_key / base_url / model
 
-动作池（三十二个动作）:
+动作池（三十三个动作）:
     search_app / open_app / show_bubble / jump / think / show_card / move_to / idle
     / screenshot / set_volume / shutdown / restart / lock / cancel_shutdown
-    / create_doc / see_screen / remember / show_plan / remind / todo_add / todo_done
+    / create_doc / see_screen / screen_locate / remember / show_plan / remind / todo_add / todo_done
     / todo_list / web_search / read_doc / list_dir / edit_doc / work_log
     / run_workflow / analyze_data / undo_last / save_skill / run_skill
 """
@@ -157,6 +157,11 @@ PROMPT_ACTION_POOL = """【动作池】
 30. {"action":"run_skill","skill":"技能名"}                   重放一条已学会的技能：
     程序把里面的步骤直接插进队列执行，一步都不再问你。技能名从【已学会的技能】
     一节里挑；该节括号里标了这条技能需要哪些参数，用户话里没提到就别硬跑。
+31. {"action":"screen_locate","target":"要找的控件描述","template":"模板图完整路径(可省)"}
+    用传统 CV（边缘 + 连通域候选，或给模板时走多尺度模板匹配）在屏幕上定位控件，
+    只返回候选框坐标，不点击、不改动屏幕内容。
+    适合"那个按钮在哪""帮我找到 xx 输入框的位置""定位这个图标"这类请求。
+    用户给了模板图片路径时【必须】填 template，定位会更准。
 
 """
 
@@ -213,6 +218,9 @@ PROMPT_RULES = """【重要规则】
   用户没提位置就不要加 location（保持弹窗由用户自己选）。
 - 用户说"看看屏幕""屏幕上是什么""帮我看看这个报错/页面"：【必须】带上 see_screen
   动作，question 填用户想知道的问题。标准序列：show_bubble 确认 + see_screen。
+- 用户说"xx 在哪""定位/找到某个按钮、输入框、图标"：【必须】带上 screen_locate
+  动作，target 填用户描述的目标；用户给了模板图路径时另加 template。
+  标准序列：show_bubble 确认 + screen_locate。
 - 用户说"记住……"或告诉你个人信息/偏好（"我叫X""我喜欢深色PPT"）：
   【必须】带上 remember 动作，fact 用一句简短陈述句。
 - 复杂任务（"帮我准备明天的汇报""调研并出个报告"等需要多步完成的）：

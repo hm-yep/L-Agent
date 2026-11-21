@@ -23,9 +23,9 @@ def test_validate_is_empty_on_the_real_contract():
     assert reg.validate() == []
 
 
-def test_registry_has_exactly_32_actions():
-    assert len(reg.ACTION_SPECS) == 32
-    assert len(reg.all_actions()) == 32
+def test_registry_has_exactly_33_actions():
+    assert len(reg.ACTION_SPECS) == 33
+    assert len(reg.all_actions()) == 33
     assert reg.all_actions() == set(reg.ACTION_SPECS)
 
 
@@ -74,7 +74,7 @@ def test_catalog_text_contains_all_action_names():
     text = reg.catalog_text()
     for name in reg.all_actions():
         assert name in text, name
-    assert "共 32 个动作" in text
+    assert "共 33 个动作" in text
 
 
 def test_catalog_text_is_stable_and_sorted():
@@ -85,7 +85,7 @@ def test_catalog_text_is_stable_and_sorted():
     lines = first.splitlines()
     names = [ln.split("：")[0].lstrip("- ") for ln in lines[1:]]
     assert names == sorted(names)
-    assert len(names) == 32
+    assert len(names) == 33
 
 
 # ---- 负向验证：篡改真实实现，validate() 必须能报出问题 ----

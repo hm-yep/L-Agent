@@ -222,6 +222,9 @@ DOC_EDIT_CANCEL_WORDS = ("取消修改", "不用改了", "不改了", "算了")
 # Key 不填则该功能不可用（其余功能不受影响）。
 # 设置里清空地址/模型 = 回到下面的出厂默认（DEFAULT 常量兜底）。
 # ============================================================
+# 动作池基数：新增动作必须同步改这里，effect_spec 会拿它做数量断言
+EXPECTED_ACTION_COUNT = 33
+
 VISION_URL_DEFAULT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 VISION_MODEL_DEFAULT = "glm-4.6v-flash"   # 智谱免费视觉推理模型
 VISION_KEY_DEFAULT = ""                   # 视觉模型 Key 需用户自填
